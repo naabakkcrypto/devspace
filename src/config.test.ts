@@ -110,6 +110,7 @@ assert.deepEqual(loadConfig(baseEnv).oauth.allowedRedirectHosts, [
   "localhost",
   "127.0.0.1",
 ]);
+assert.deepEqual(loadConfig(baseEnv).oauth.resourceAliases, []);
 assert.equal(loadConfig(baseEnv).oauth.accessTokenTtlSeconds, 3600);
 assert.equal(loadConfig(baseEnv).oauth.refreshTokenTtlSeconds, 2592000);
 
@@ -121,6 +122,11 @@ assert.deepEqual(
   loadConfig({ ...baseEnv, DEVSPACE_OAUTH_ALLOWED_REDIRECT_HOSTS: "chatgpt.com,example.com" }).oauth
     .allowedRedirectHosts,
   ["chatgpt.com", "example.com"],
+);
+assert.deepEqual(
+  loadConfig({ ...baseEnv, DEVSPACE_OAUTH_RESOURCE_ALIASES: "https://api.openai.com/v1/tunnel/example/mcp" }).oauth
+    .resourceAliases,
+  ["https://api.openai.com/v1/tunnel/example/mcp"],
 );
 assert.equal(
   loadConfig({ ...baseEnv, DEVSPACE_OAUTH_ACCESS_TOKEN_TTL_SECONDS: "120" }).oauth
@@ -176,6 +182,7 @@ writeFileSync(
     subagents: true,
     artifactsEnabled: true,
     artifactMaxFileBytes: 321,
+    oauthResourceAliases: ["https://api.openai.com/v1/tunnel/example/mcp"],
   }),
 );
 writeFileSync(
@@ -192,6 +199,7 @@ assert.equal(fileConfig.publicBaseUrl, "https://devspace.example.com");
 assert.equal(fileConfig.subagents, true);
 assert.equal(fileConfig.artifactsEnabled, true);
 assert.equal(fileConfig.artifactMaxFileBytes, 321);
+assert.deepEqual(fileConfig.oauth.resourceAliases, ["https://api.openai.com/v1/tunnel/example/mcp"]);
 assert.deepEqual(fileConfig.allowedHosts, [
   "localhost",
   "127.0.0.1",

@@ -18,6 +18,7 @@ export interface OAuthConfig {
   refreshTokenTtlSeconds: number;
   scopes: string[];
   allowedRedirectHosts: string[];
+  resourceAliases: string[];
 }
 
 interface AuthorizationCodeRecord {
@@ -132,9 +133,11 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
     params: AuthorizationParams,
     res: Response,
   ): Promise<void> {
-    if (!params.resource || !checkResourceAllowed({ requestedResource: params.resource, configuredResource: this.resourceServerUrl })) {
-      throw new InvalidRequestError("Invalid or missing OAuth resource");
+    const resource = this.canonicalResource(params.resource);
+    if (!resource) {
+      throw new InvalidRequestError("Invalid OAuth resource");
     }
+    const authorizedParams = { ...params, resource };
     if (!requestedScopesAllowed(params.scopes ?? [], this.config.scopes)) {
       throw new InvalidRequestError("Requested scope is not supported");
     }
@@ -145,8 +148,8 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
         formHtml({
           clientName: client.client_name ?? client.client_id,
           scopes: params.scopes ?? this.config.scopes,
-          resource: params.resource,
-          fields: authorizationFormFields(client, params),
+          resource,
+          fields: authorizationFormFields(client, authorizedParams),
         }),
       );
       return;
@@ -160,8 +163,8 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
           error: "The Owner password was not accepted.",
           clientName: client.client_name ?? client.client_id,
           scopes: params.scopes ?? this.config.scopes,
-          resource: params.resource,
-          fields: authorizationFormFields(client, params),
+          resource,
+          fields: authorizationFormFields(client, authorizedParams),
         }),
       );
       return;
@@ -170,7 +173,7 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
     const code = `code-${randomUUID()}`;
     this.codes.set(code, {
       clientId: client.client_id,
-      params,
+      params: authorizedParams,
       expiresAtMs: Date.now() + CODE_TTL_MS,
     });
 
@@ -199,12 +202,17 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
     if (redirectUri && redirectUri !== record.params.redirectUri) {
       throw new InvalidGrantError("redirect_uri does not match the authorization request");
     }
-    if (resource && !checkResourceAllowed({ requestedResource: resource, configuredResource: this.resourceServerUrl })) {
+    const requestedResource = resource ? this.canonicalResource(resource) : undefined;
+    if (resource && !requestedResource) {
       throw new InvalidGrantError("Invalid resource");
     }
 
     this.codes.delete(authorizationCode);
-    return this.issueTokens(client.client_id, record.params.scopes ?? this.config.scopes, record.params.resource);
+    return this.issueTokens(
+      client.client_id,
+      record.params.scopes ?? this.config.scopes,
+      requestedResource ?? record.params.resource,
+    );
   }
 
   async exchangeRefreshToken(
@@ -218,7 +226,8 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
     if (!record || record.clientId !== client.client_id || record.expiresAt < Math.floor(Date.now() / 1000)) {
       throw new InvalidGrantError("Invalid refresh token");
     }
-    if (resource && !checkResourceAllowed({ requestedResource: resource, configuredResource: this.resourceServerUrl })) {
+    const requestedResource = resource ? this.canonicalResource(resource) : undefined;
+    if (resource && !requestedResource) {
       throw new InvalidGrantError("Invalid resource");
     }
 
@@ -230,7 +239,7 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
     return this.issueTokens(
       client.client_id,
       requestedScopes,
-      resource ?? (record.resource ? new URL(record.resource) : undefined),
+      requestedResource ?? (record.resource ? new URL(record.resource) : undefined),
       refreshTokenHash,
     );
   }
@@ -269,6 +278,28 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
       throw new InvalidGrantError("Invalid authorization code");
     }
     return record;
+  }
+
+  private canonicalResource(resource?: URL): URL | undefined {
+    if (!resource) return this.resourceServerUrl;
+    if (checkResourceAllowed({ requestedResource: resource, configuredResource: this.resourceServerUrl })) {
+      return this.resourceServerUrl;
+    }
+
+    for (const alias of this.config.resourceAliases) {
+      let aliasUrl: URL;
+      try {
+        aliasUrl = new URL(alias);
+      } catch {
+        continue;
+      }
+
+      if (checkResourceAllowed({ requestedResource: resource, configuredResource: aliasUrl })) {
+        return this.resourceServerUrl;
+      }
+    }
+
+    return undefined;
   }
 
   private issueTokens(

@@ -15,6 +15,7 @@ export interface DevspaceUserConfig {
   allowedRoots?: string[];
   publicBaseUrl?: string | null;
   allowedHosts?: string[];
+  oauthResourceAliases?: string[];
   stateDir?: string;
   worktreeRoot?: string;
   artifactsEnabled?: boolean;
