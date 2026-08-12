@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -76,6 +76,17 @@ try {
     }).id,
     { status: "running" },
   );
+  const waiting = store.update(
+    store.create({
+      workspaceId: "ws_current",
+      workspaceRoot: projectRoot,
+      profileName: "reviewer",
+      provider: "codex",
+      model: "gpt-5.4",
+      thinking: "high",
+    }).id,
+    { status: "running" },
+  );
   store.close();
 
   const output = execFileSync("node", ["--import", "tsx", "src/cli.ts", "agents", "ls"], {
@@ -120,6 +131,45 @@ try {
     /Unknown subagent id/,
   );
   assert.throws(
+    () => execFileSync("node", ["--import", "tsx", "src/cli.ts", "agents", "wait", current.id, other.id], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      env: currentEnv,
+      stdio: "pipe",
+    }),
+    /Unknown subagent id/,
+  );
+  assert.throws(
+    () => execFileSync("node", ["--import", "tsx", "src/cli.ts", "agents", "wait"], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      env: currentEnv,
+      stdio: "pipe",
+    }),
+    /Usage: devspace agents wait <id> \[<id> \.\.\.\]/,
+  );
+
+  const waitChild = spawn("node", [
+    "--import", "tsx", "src/cli.ts", "agents", "wait", current.id, waiting.id, current.id,
+  ], {
+    cwd: process.cwd(),
+    env: currentEnv,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  const waitOutput = collectChildOutput(waitChild);
+  const waitCompletion = waitForExit(waitChild, waitOutput);
+  await waitForOutput(waitOutput, new RegExp(`${waiting.id} running`));
+  const transitionStore = new LocalAgentStore(stateDir);
+  transitionStore.update(waiting.id, { status: "idle", latestResponse: "private final response" });
+  transitionStore.close();
+  const waitResult = await waitCompletion;
+  assert.equal(waitResult.code, 0, waitResult.stderr);
+  assert.equal((waitResult.stdout.match(new RegExp(`${current.id} idle`, "g")) ?? []).length, 1);
+  assert.match(waitResult.stdout, new RegExp(`${waiting.id} running`));
+  assert.match(waitResult.stdout, new RegExp(`${waiting.id} idle`));
+  assert.match(waitResult.stdout, /Barrier complete: 2\/2 terminal \(idle=2, error=0, stopped=0\)\./);
+  assert.doesNotMatch(waitResult.stdout, /private final response/);
+  assert.throws(
     () => execFileSync("node", [
       "--import", "tsx", "src/cli.ts", "agents", "__worker", current.id,
       "--prompt-file", "C:/Windows/System32",
@@ -141,4 +191,66 @@ try {
   }).subagents, true);
 } finally {
   rmSync(root, { recursive: true, force: true });
+}
+
+interface CollectedChildOutput {
+  stdout: string;
+  stderr: string;
+  listeners: Set<() => void>;
+}
+
+function collectChildOutput(child: ChildProcess): CollectedChildOutput {
+  const collected: CollectedChildOutput = { stdout: "", stderr: "", listeners: new Set() };
+  child.stdout?.setEncoding("utf8");
+  child.stderr?.setEncoding("utf8");
+  child.stdout?.on("data", (chunk: string) => {
+    collected.stdout += chunk;
+    for (const listener of collected.listeners) listener();
+  });
+  child.stderr?.on("data", (chunk: string) => {
+    collected.stderr += chunk;
+    for (const listener of collected.listeners) listener();
+  });
+  return collected;
+}
+
+async function waitForOutput(collected: CollectedChildOutput, pattern: RegExp): Promise<void> {
+  if (pattern.test(collected.stdout)) return;
+  await new Promise<void>((resolveWait, rejectWait) => {
+    const deadline = setTimeout(() => {
+      cleanup();
+      rejectWait(new Error(`Timed out waiting for ${pattern}. stdout=${collected.stdout} stderr=${collected.stderr}`));
+    }, 10_000);
+    const onOutput = (): void => {
+      if (!pattern.test(collected.stdout)) return;
+      cleanup();
+      resolveWait();
+    };
+    const cleanup = (): void => {
+      clearTimeout(deadline);
+      collected.listeners.delete(onOutput);
+    };
+    collected.listeners.add(onOutput);
+  });
+}
+
+async function waitForExit(
+  child: ChildProcess,
+  collected: CollectedChildOutput,
+): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  const code = await new Promise<number | null>((resolveExit, rejectExit) => {
+    const deadline = setTimeout(() => {
+      child.kill();
+      rejectExit(new Error(`Timed out waiting for child exit. stdout=${collected.stdout} stderr=${collected.stderr}`));
+    }, 10_000);
+    child.once("error", (error) => {
+      clearTimeout(deadline);
+      rejectExit(error);
+    });
+    child.once("exit", (exitCode) => {
+      clearTimeout(deadline);
+      resolveExit(exitCode);
+    });
+  });
+  return { code, stdout: collected.stdout, stderr: collected.stderr };
 }

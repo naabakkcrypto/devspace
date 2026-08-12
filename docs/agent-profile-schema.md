@@ -28,6 +28,8 @@ disabled: false
 You are a read-only reviewer. Do not edit files.
 Focus on correctness, security, test gaps, and maintainability.
 Cite files and return concise findings.
+If the scope is broad, partition it autonomously and report uncovered residual
+risk instead of asking the parent how to split the review.
 ```
 
 ## Frontmatter fields
@@ -160,6 +162,7 @@ The Subagent skill teaches only:
 ```bash
 devspace agents ls
 devspace agents run <profile-or-id> "<prompt>"
+devspace agents wait <id> [<id> ...]
 devspace agents show <id>
 ```
 
@@ -179,6 +182,10 @@ devspace agents show <id>
 
 `devspace agents ls` lists existing subagent sessions for the current workspace;
 it does not list profile definitions.
+
+`devspace agents wait` blocks on a parent-owned multi-session barrier and emits
+only status transitions. After it returns, use `show` once per id to retrieve
+the bounded reports.
 
 The full profile body stays out of the model context until DevSpace launches the
 profile.

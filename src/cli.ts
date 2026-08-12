@@ -321,6 +321,7 @@ function printHelp(): void {
       "  devspace config set publicBaseUrl <url|null>",
       "  devspace agents ls       List subagent sessions",
       "  devspace agents run <profile-or-provider-or-id> [--model <model>] <prompt>",
+      "  devspace agents wait <id> [<id> ...]",
       "  devspace agents show <id>",
       "  devspace -v, --version   Print the installed version",
       "",
@@ -342,6 +343,9 @@ async function runAgentsCommand(args: string[]): Promise<void> {
       return;
     case "show":
       await runAgentsShow(rest);
+      return;
+    case "wait":
+      await runAgentsWait(rest);
       return;
     case "__worker":
       await runAgentsWorker(rest);
@@ -564,6 +568,45 @@ async function runAgentsWorker(args: string[]): Promise<void> {
   }
 }
 
+async function runAgentsWait(args: string[]): Promise<void> {
+  if (args.length === 0) throw new Error("Usage: devspace agents wait <id> [<id> ...]");
+
+  const config = loadConfig();
+  const store = createLocalAgentStore(config);
+  const scope = resolveCurrentWorkspaceScope();
+  try {
+    const recordsById = new Map<string, LocalAgentRecord>();
+    for (const id of args) {
+      const record = store.getScoped(id, scope);
+      if (!record) throw new Error(`Unknown subagent id: ${id}`);
+      recordsById.set(record.id, record);
+    }
+
+    let records = [...recordsById.values()];
+    for (const record of records) console.log(formatAgentLine(record));
+
+    while (records.some((record) => !isTerminalLocalAgentStatus(record.status))) {
+      await sleep(500);
+      records = records.map((previous) => {
+        const current = store.getScoped(previous.id, scope);
+        if (!current) throw new Error(`Unknown subagent id: ${previous.id}`);
+        if (current.status !== previous.status) console.log(formatAgentLine(current));
+        return current;
+      });
+    }
+
+    const idle = records.filter((record) => record.status === "idle").length;
+    const error = records.filter((record) => record.status === "error").length;
+    const stopped = records.filter((record) => record.status === "stopped").length;
+    console.log(
+      `Barrier complete: ${records.length}/${records.length} terminal `
+      + `(idle=${idle}, error=${error}, stopped=${stopped}).`,
+    );
+  } finally {
+    store.close();
+  }
+}
+
 function composeLocalAgentPrompt(profile: LocalAgentProfile, prompt: string): string {
   const body = profile.body.trim();
   return body ? `${body}\n\nTask:\n${prompt}` : prompt;
@@ -624,6 +667,10 @@ function formatAgentLine(agent: Pick<
   const model = agent.model ? ` requested_model=${agent.model}` : "";
   const thinking = agent.thinking ? ` requested_thinking=${agent.thinking}` : "";
   return `${agent.id} ${agent.status} ${agent.profileName} ${agent.provider}${model}${thinking} requested_write=${agent.writeMode}`;
+}
+
+function isTerminalLocalAgentStatus(status: LocalAgentRecord["status"]): boolean {
+  return status === "idle" || status === "error" || status === "stopped";
 }
 
 async function deliverAgentPrompt(
@@ -713,6 +760,7 @@ function printAgentsHelp(): void {
       "Usage:",
       "  devspace agents ls",
       "  devspace agents run <profile-or-provider-or-id> [--model <model>] [--thinking <level>] <prompt>",
+      "  devspace agents wait <id> [<id> ...]",
       "  devspace agents show <id>",
     ].join("\n"),
   );

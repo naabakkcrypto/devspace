@@ -143,12 +143,13 @@ Skill paths may be outside the workspace. DevSpace only permits reading:
 Set `DEVSPACE_SKILLS=0` to hide skills from workspace output. Set
 `DEVSPACE_SUBAGENTS=1` to expose the experimental subagent catalog and
 `subagent-delegation` skill. That skill teaches the minimal
-`devspace agents ls`, `devspace agents run`, and `devspace agents show`
-workflow. The catalog comes from `open_workspace`; `devspace agents ls` lists
-existing subagent sessions for that workspace.
+`devspace agents ls`, `devspace agents run`, `devspace agents wait`, and
+`devspace agents show` workflow. The catalog comes from `open_workspace`;
+`devspace agents ls` lists existing subagent sessions for that workspace.
 
 The host may launch all ready independent read-only lanes in one wave, then
-must wait for a barrier and reconcile their evidence before continuing. There
+must run one multi-id `agents wait` barrier, fetch each report once with
+`agents show`, and reconcile their evidence before continuing. There
 is no fixed call or token cap. Writable profiles require separate managed
 worktrees. Managed execution is currently Codex-only; other providers remain
 uncertified catalog candidates. Requested model/thinking/mode metadata must not

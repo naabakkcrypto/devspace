@@ -153,7 +153,9 @@ agent without reading provider-specific launch details. `devspace agents ls`
 lists existing subagent sessions for the current workspace, scoped by the
 workspace environment injected into shell commands. The `subagent-delegation`
 skill teaches the model to use only the minimal `devspace agents ls`,
-`devspace agents run`, and `devspace agents show` workflow.
+`devspace agents run`, `devspace agents wait`, and `devspace agents show`
+workflow. `wait` is a multi-session barrier; it emits status transitions and
+returns only after every requested session is terminal.
 
 Profile `writeMode` defaults to `read_only`. `allowed` is accepted only for a
 Codex profile running in a managed worktree; `full_access` is invalid. Managed

@@ -22,6 +22,7 @@ Use only these commands for normal delegation:
 ```bash
 devspace agents ls
 devspace agents run <profile-or-provider-or-id> "<prompt>"
+devspace agents wait <id> [<id> ...]
 devspace agents show <id>
 ```
 
@@ -38,9 +39,14 @@ is read-only by default.
 
 `run <id> "<prompt>"` sends a follow-up to an existing agent.
 
-`show <id>` prints status and the latest response. If the agent is still
-running, `show` waits briefly. If there is still no final response, call `show`
-again later.
+`wait <id> [<id> ...]` is the parent-owned barrier. It validates and deduplicates
+the sessions in the current workspace, emits only status transitions, and
+returns when every id is `idle`, `error`, or `stopped`. It does not print final
+responses.
+
+`show <id>` prints status and the latest response. After a multi-agent wave,
+call it once per id after `wait` completes instead of repeatedly polling every
+session with `show`.
 
 Read-only runs heartbeat while active. A read-only run left stale by a crash is
 reclaimable after 90 seconds; database fencing prevents its old worker from
@@ -104,9 +110,10 @@ Use a parent-owned barrier between waves:
 
 1. record each agent id, role, requested provider/model/thinking/mode, task, and
    owned paths;
-2. poll every id until `idle`, `error`, or `stopped`;
-3. reproduce important file/command evidence and reconcile contradictions;
-4. launch another wave only for a remaining acceptance gap.
+2. run one `devspace agents wait <id> [<id> ...]` barrier for the whole wave;
+3. call `devspace agents show <id>` once per terminal session to collect reports;
+4. reproduce important file/command evidence and reconcile contradictions;
+5. launch another wave only for a remaining acceptance gap.
 
 Never run two writers in one workspace. Give each writable lane its own managed
 worktree, then integrate one reviewed candidate. A textual ownership statement
