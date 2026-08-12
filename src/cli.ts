@@ -19,6 +19,7 @@ import {
   assertLocalAgentProviderAvailable,
   formatLocalAgentProviderAvailabilitySummary,
 } from "./local-agent-availability.js";
+import { resolveLocalAgentExecutionRoot } from "./local-agent-execution-root.js";
 import {
   formatAvailableLocalAgentTargets,
   parseLocalAgentRunArgs,
@@ -381,6 +382,7 @@ async function runAgentsRun(args: string[]): Promise<void> {
 
   const config = loadConfig();
   const workspaceRoot = resolveCurrentWorkspaceRoot();
+  const executionRoot = resolveLocalAgentExecutionRoot(workspaceRoot, process.cwd());
   const scope = resolveCurrentWorkspaceScope();
   const store = createLocalAgentStore(config);
   let existing = store.getScoped(parsed.target, scope);
@@ -417,6 +419,7 @@ async function runAgentsRun(args: string[]): Promise<void> {
         fullPrompt,
         scope,
         config.stateDir,
+        executionRoot,
       );
     } catch (error) {
       try {
@@ -458,7 +461,7 @@ async function runAgentsRun(args: string[]): Promise<void> {
   });
 
   try {
-    await spawnAgentWorker(record.id, runId, fullPrompt, scope, config.stateDir);
+    await spawnAgentWorker(record.id, runId, fullPrompt, scope, config.stateDir, executionRoot);
   } catch (error) {
     try {
       store.updateOwned(record.id, scope, runId, {
@@ -535,9 +538,10 @@ async function runAgentsWorker(args: string[]): Promise<void> {
     heartbeat.unref();
     const envelope = await readLocalAgentPromptEnvelope(process.stdin, { agentId: id, runId });
     await sendWorkerAcknowledgement(id, runId);
+    const executionRoot = resolveLocalAgentExecutionRoot(record.workspaceRoot, process.cwd());
     const result = await runManagedLocalAgentProvider(record.provider, {
       prompt: envelope.prompt,
-      workspace: record.workspaceRoot,
+      workspace: executionRoot,
       providerSessionId: record.providerSessionId,
       writeMode: record.writeMode,
       model: record.model,
@@ -618,6 +622,7 @@ async function spawnAgentWorker(
   prompt: string,
   scope: LocalAgentWorkspaceScope,
   stateDir: string,
+  executionRoot: string,
 ): Promise<void> {
   const envelope = createLocalAgentPromptEnvelope({ agentId, runId, prompt });
   const child = spawn(process.execPath, [
@@ -631,6 +636,7 @@ async function spawnAgentWorker(
     detached: true,
     stdio: ["pipe", "ignore", "pipe", "ipc"],
     windowsHide: true,
+    cwd: executionRoot,
     env: safeLocalAgentEnvironment(process.env, {
       DEVSPACE_STATE_DIR: stateDir,
       DEVSPACE_WORKSPACE_ID: scope.workspaceId,
