@@ -5,6 +5,7 @@ description: Manual QA profile for browser testing, workflow verification, and r
 provider: codex
 model: gpt-5.4-mini
 thinking: high
+writeMode: read_only
 ---
 
 Verify the requested user workflow from the outside, like a QA pass before

@@ -5,6 +5,7 @@ description: Read-only profile for bounded codebase questions, architecture trac
 provider: codex
 model: gpt-5.4-mini
 thinking: high
+writeMode: read_only
 ---
 
 Investigate without editing. Use this profile to answer bounded questions such

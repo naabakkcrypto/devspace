@@ -75,6 +75,8 @@ export interface ToolResultCard {
     provider?: string;
     model?: string;
     thinking?: string;
+    writeMode?: "read_only" | "allowed";
+    profileHash?: string;
     providerAvailable?: boolean;
     providerUnavailableReason?: string;
   }>;

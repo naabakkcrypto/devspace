@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
@@ -5,6 +6,7 @@ import { parse as parseYaml } from "yaml";
 import type { ServerConfig } from "./config.js";
 
 export type LocalAgentProvider = "codex" | "claude" | "opencode" | "pi" | "cursor" | "copilot";
+export type LocalAgentWriteMode = "read_only" | "allowed";
 
 export const LOCAL_AGENT_PROVIDERS: readonly LocalAgentProvider[] = [
   "codex",
@@ -21,6 +23,8 @@ export interface LocalAgentProfile {
   provider: LocalAgentProvider;
   model?: string;
   thinking?: string;
+  writeMode: LocalAgentWriteMode;
+  profileHash: string;
   filePath: string;
   body: string;
   disabled: boolean;
@@ -32,6 +36,8 @@ export interface LocalAgentProfileSummary {
   provider: LocalAgentProvider;
   model?: string;
   thinking?: string;
+  writeMode: LocalAgentWriteMode;
+  profileHash: string;
 }
 
 interface ParsedFrontmatter {
@@ -41,6 +47,7 @@ interface ParsedFrontmatter {
 
 const FRONTMATTER_DELIMITER = "---";
 const PROVIDERS = new Set<LocalAgentProvider>(LOCAL_AGENT_PROVIDERS);
+const WRITE_MODES = new Set<LocalAgentWriteMode>(["read_only", "allowed"]);
 
 export async function loadLocalAgentProfiles(
   config: ServerConfig,
@@ -74,6 +81,8 @@ export function summarizeLocalAgentProfile(
     provider: profile.provider,
     model: profile.model,
     thinking: profile.thinking,
+    writeMode: profile.writeMode,
+    profileHash: profile.profileHash,
   };
 }
 
@@ -148,6 +157,7 @@ function profileFromFrontmatter(
   const name = readString(frontmatter, "name") ?? basename(filePath, ".md");
   const description = readString(frontmatter, "description");
   const provider = readProvider(frontmatter, filePath);
+  const writeMode = readWriteMode(frontmatter, filePath);
   if (!description) {
     throw new Error(`Subagent profile is missing description: ${filePath}`);
   }
@@ -158,10 +168,52 @@ function profileFromFrontmatter(
     provider,
     model: readString(frontmatter, "model"),
     thinking: readString(frontmatter, "thinking"),
+    writeMode,
+    profileHash: hashProfileContent(frontmatter, body),
     filePath,
     body,
     disabled: frontmatter.disabled === true,
   };
+}
+
+function readWriteMode(
+  frontmatter: Record<string, unknown>,
+  filePath: string,
+): LocalAgentWriteMode {
+  const hasCanonical = Object.prototype.hasOwnProperty.call(frontmatter, "writeMode");
+  const hasAlias = Object.prototype.hasOwnProperty.call(frontmatter, "write_mode");
+  if (hasCanonical && hasAlias) {
+    throw new Error(`Subagent profile must not define both writeMode and write_mode: ${filePath}`);
+  }
+  if (!hasCanonical && !hasAlias) return "read_only";
+
+  const key = hasCanonical ? "writeMode" : "write_mode";
+  const value = frontmatter[key];
+  if (typeof value !== "string") {
+    throw new Error(`Subagent profile ${key} must be read_only or allowed: ${filePath}`);
+  }
+
+  const normalized = value.trim();
+  if (!WRITE_MODES.has(normalized as LocalAgentWriteMode)) {
+    throw new Error(`Subagent profile ${key} must be read_only or allowed: ${filePath}`);
+  }
+  return normalized as LocalAgentWriteMode;
+}
+
+function hashProfileContent(frontmatter: Record<string, unknown>, body: string): string {
+  const canonical = `${stableSerialize(frontmatter)}\n${body.replace(/\r\n?/g, "\n").trim()}`;
+  return createHash("sha256").update(canonical, "utf8").digest("hex");
+}
+
+function stableSerialize(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map((item) => stableSerialize(item)).join(",")}]`;
+  if (value && typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) =>
+      a < b ? -1 : a > b ? 1 : 0,
+    );
+    return `{${entries.map(([key, item]) => `${JSON.stringify(key)}:${stableSerialize(item)}`).join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
 }
 
 function readProvider(frontmatter: Record<string, unknown>, filePath: string): LocalAgentProvider {

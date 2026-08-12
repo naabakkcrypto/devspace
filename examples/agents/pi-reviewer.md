@@ -5,6 +5,7 @@ description: Read-only review profile for quick risk checks and targeted impleme
 provider: pi
 model: openai-codex/gpt-5.5
 thinking: high
+writeMode: read_only
 ---
 
 Review or investigate only the area requested. This profile is best for quick

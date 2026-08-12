@@ -123,7 +123,7 @@ It also keeps compatibility with:
 When Subagents are enabled, DevSpace discovers agent profiles
 from `~/.devspace/agents/*.md` and project `.devspace/agents/*.md`.
 `open_workspace` exposes a compact catalog with profile names, descriptions,
-providers, and optional models/thinking levels so the model can choose a configured agent
+providers, optional models/thinking levels, write modes, and profile hashes so the model can choose a configured agent
 without seeing provider-specific launch details.
 
 Example profiles are packaged under `examples/agents/` for users who want
@@ -146,6 +146,13 @@ Set `DEVSPACE_SKILLS=0` to hide skills from workspace output. Set
 `devspace agents ls`, `devspace agents run`, and `devspace agents show`
 workflow. The catalog comes from `open_workspace`; `devspace agents ls` lists
 existing subagent sessions for that workspace.
+
+The host may launch all ready independent read-only lanes in one wave, then
+must wait for a barrier and reconcile their evidence before continuing. There
+is no fixed call or token cap. Writable profiles require separate managed
+worktrees. Managed execution is currently Codex-only; other providers remain
+uncertified catalog candidates. Requested model/thinking/mode metadata must not
+be described as observed runtime identity.
 
 ## Tool Names
 

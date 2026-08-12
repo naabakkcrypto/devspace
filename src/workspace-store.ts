@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { openDatabase, type DatabaseHandle } from "./db/client.js";
 import {
@@ -18,6 +19,7 @@ export interface WorkspaceSession {
   baseRef?: string;
   baseSha?: string;
   managed: boolean;
+  capabilityToken: string;
   createdAt: string;
   lastUsedAt: string;
 }
@@ -39,6 +41,7 @@ export interface WorkspaceStore {
     baseRef?: string;
     baseSha?: string;
     managed?: boolean;
+    capabilityToken?: string;
   }): WorkspaceSession;
   getSession(id: string): WorkspaceSession | undefined;
   touchSession(id: string): void;
@@ -71,6 +74,7 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
     baseRef?: string;
     baseSha?: string;
     managed?: boolean;
+    capabilityToken?: string;
   }): WorkspaceSession {
     const now = new Date().toISOString();
     const session: WorkspaceSession = {
@@ -82,6 +86,7 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
       baseRef: input.baseRef,
       baseSha: input.baseSha,
       managed: input.managed ?? false,
+      capabilityToken: input.capabilityToken ?? randomBytes(32).toString("hex"),
       createdAt: now,
       lastUsedAt: now,
     };
@@ -97,6 +102,7 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
         baseRef: session.baseRef ?? null,
         baseSha: session.baseSha ?? null,
         managed: String(session.managed),
+        capabilityToken: session.capabilityToken,
         createdAt: session.createdAt,
         lastUsedAt: session.lastUsedAt,
       })
@@ -106,11 +112,21 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
   }
 
   getSession(id: string): WorkspaceSession | undefined {
-    const row = this.database.db
+    let row = this.database.db
       .select()
       .from(workspaceSessions)
       .where(eq(workspaceSessions.id, id))
       .get();
+
+    if (row && !row.capabilityToken) {
+      const capabilityToken = randomBytes(32).toString("hex");
+      this.database.db
+        .update(workspaceSessions)
+        .set({ capabilityToken })
+        .where(eq(workspaceSessions.id, id))
+        .run();
+      row = { ...row, capabilityToken };
+    }
 
     return row ? rowToWorkspaceSession(row) : undefined;
   }
@@ -221,6 +237,7 @@ function rowToWorkspaceSession(row: WorkspaceSessionRow): WorkspaceSession {
     baseRef: row.baseRef ?? undefined,
     baseSha: row.baseSha ?? undefined,
     managed: row.managed === "true",
+    capabilityToken: row.capabilityToken ?? "",
     createdAt: row.createdAt,
     lastUsedAt: row.lastUsedAt,
   };

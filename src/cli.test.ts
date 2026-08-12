@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "./config.js";
 import { LocalAgentStore } from "./local-agent-store.js";
+import { SqliteWorkspaceStore } from "./workspace-store.js";
 
 const packageJson = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as {
   version: string;
@@ -42,6 +43,18 @@ try {
       "",
     ].join("\n"),
   );
+  const workspaceStore = new SqliteWorkspaceStore(stateDir);
+  workspaceStore.createSession({
+    id: "ws_current",
+    root: projectRoot,
+    capabilityToken: "cap-current",
+  });
+  workspaceStore.createSession({
+    id: "ws_other",
+    root: projectRoot,
+    capabilityToken: "cap-other",
+  });
+  workspaceStore.close();
   const store = new LocalAgentStore(stateDir);
   const current = store.update(
     store.create({
@@ -75,14 +88,49 @@ try {
       DEVSPACE_STATE_DIR: stateDir,
       DEVSPACE_WORKSPACE_ID: "ws_current",
       DEVSPACE_WORKSPACE_ROOT: projectRoot,
+      DEVSPACE_WORKSPACE_CAPABILITY: "cap-current",
       DEVSPACE_SUBAGENTS: "1",
       DEVSPACE_OAUTH_OWNER_TOKEN: "test-owner-token-that-is-long-enough",
     },
   });
 
-  assert.match(output, new RegExp(`${current.id} idle reviewer codex gpt-5\\.4 thinking=high`));
+  assert.match(output, new RegExp(`${current.id} idle reviewer codex requested_model=gpt-5\\.4 requested_thinking=high`));
   assert.doesNotMatch(output, /profile reviewer/);
   assert.doesNotMatch(output, new RegExp(other.id));
+  assert.match(output, /requested_write=read_only/);
+
+  const currentEnv = {
+    ...process.env,
+    DEVSPACE_CONFIG_DIR: configDir,
+    DEVSPACE_ALLOWED_ROOTS: projectRoot,
+    DEVSPACE_STATE_DIR: stateDir,
+    DEVSPACE_WORKSPACE_ID: "ws_current",
+    DEVSPACE_WORKSPACE_ROOT: projectRoot,
+    DEVSPACE_WORKSPACE_CAPABILITY: "cap-current",
+    DEVSPACE_SUBAGENTS: "1",
+    DEVSPACE_OAUTH_OWNER_TOKEN: "test-owner-token-that-is-long-enough",
+  };
+  assert.throws(
+    () => execFileSync("node", ["--import", "tsx", "src/cli.ts", "agents", "show", other.id], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      env: currentEnv,
+      stdio: "pipe",
+    }),
+    /Unknown subagent id/,
+  );
+  assert.throws(
+    () => execFileSync("node", [
+      "--import", "tsx", "src/cli.ts", "agents", "__worker", current.id,
+      "--prompt-file", "C:/Windows/System32",
+    ], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      env: currentEnv,
+      stdio: "pipe",
+    }),
+    /Usage: devspace agents __worker/,
+  );
 
   assert.equal(loadConfig({
     DEVSPACE_CONFIG_DIR: configDir,

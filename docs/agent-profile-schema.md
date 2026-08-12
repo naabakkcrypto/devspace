@@ -21,6 +21,7 @@ description: Read-only reviewer for bugs, security risks, and missing tests.
 provider: codex
 model: gpt-5.4
 thinking: high
+writeMode: read_only
 disabled: false
 ---
 
@@ -68,8 +69,8 @@ provider: cursor
 provider: copilot
 ```
 
-Unsupported or custom providers are rejected. DevSpace maps providers to their
-native integration:
+Unsupported or custom provider ids are rejected. DevSpace retains native
+adapter candidates for the following catalog ids:
 
 - `codex`: Codex SDK
 - `claude`: Claude Code SDK
@@ -77,6 +78,11 @@ native integration:
 - `pi`: Pi RPC mode
 - `cursor`: ACP
 - `copilot`: ACP
+
+The managed subagent runner is deliberately stricter than this catalog: only
+Codex is currently certified for managed execution. Non-Codex profiles are
+reported as catalog-only/unavailable by `open_workspace` even when the local
+adapter package or command exists.
 
 ### `model`
 
@@ -106,6 +112,26 @@ DevSpace passes this through to providers that expose a matching control:
 - `pi`: `--thinking`.
 - `opencode`: model variant.
 - `cursor` and `copilot`: ACP thought-level config when supported.
+
+### `writeMode`
+
+Optional profile write policy. When omitted, the profile is treated as
+`read_only`.
+
+```yaml
+writeMode: read_only
+writeMode: allowed
+```
+
+`write_mode` is accepted as a compatibility alias. Values must be strings and
+must be exactly `read_only` or `allowed`; invalid values reject the profile.
+There is no profile-level `full_access` mode.
+
+Managed execution currently accepts Codex profiles only. Non-Codex examples
+remain useful catalog templates, but the CLI fails closed until an adapter has
+executable sandbox evidence. An `allowed` Codex profile is accepted only in a
+managed DevSpace worktree; requested model, thinking, and write mode remain
+unverified runtime metadata unless a provider supplies native evidence.
 
 ### `disabled`
 
@@ -145,7 +171,9 @@ devspace agents show <id>
   "description": "Read-only reviewer for bugs, security risks, and missing tests.",
   "provider": "codex",
   "model": "gpt-5.4",
-  "thinking": "high"
+  "thinking": "high",
+  "writeMode": "read_only",
+  "profileHash": "<sha256>"
 }
 ```
 

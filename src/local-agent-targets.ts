@@ -3,6 +3,7 @@ import {
   LOCAL_AGENT_PROVIDERS,
   type LocalAgentProfile,
   type LocalAgentProvider,
+  type LocalAgentWriteMode,
 } from "./local-agent-profiles.js";
 
 export interface ParsedLocalAgentRunArgs {
@@ -19,6 +20,7 @@ export type LocalAgentTarget =
       provider: LocalAgentProvider;
       model?: string;
       thinking?: string;
+      writeMode: LocalAgentWriteMode;
       profile: LocalAgentProfile;
     }
   | {
@@ -27,6 +29,7 @@ export type LocalAgentTarget =
       provider: LocalAgentProvider;
       model?: string;
       thinking?: string;
+      writeMode: LocalAgentWriteMode;
     };
 
 export function parseLocalAgentRunArgs(args: string[]): ParsedLocalAgentRunArgs {
@@ -91,6 +94,7 @@ export function resolveLocalAgentTarget(
       provider: profile.provider,
       model: modelOverride ?? profile.model,
       thinking: thinkingOverride ?? profile.thinking,
+      writeMode: profile.writeMode,
       profile,
     };
   }
@@ -102,6 +106,7 @@ export function resolveLocalAgentTarget(
       provider: target,
       model: modelOverride,
       thinking: thinkingOverride,
+      writeMode: "read_only",
     };
   }
 

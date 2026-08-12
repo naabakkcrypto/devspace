@@ -71,14 +71,105 @@ try {
   assert.equal(profiles[0]?.provider, "claude");
   assert.equal(profiles[0]?.model, "sonnet");
   assert.equal(profiles[0]?.thinking, "high");
+  assert.equal(profiles[0]?.writeMode, "read_only");
+  assert.match(profiles[0]?.profileHash ?? "", /^[a-f0-9]{64}$/);
   assert.equal(profiles[0]?.body, "Project body.");
+  const firstHash = profiles[0]?.profileHash;
   assert.deepEqual(summarizeLocalAgentProfile(profiles[0]!), {
     name: "reviewer",
     description: "Project reviewer #1.",
     provider: "claude",
     model: "sonnet",
     thinking: "high",
+    writeMode: "read_only",
+    profileHash: firstHash,
   });
+
+  await writeFile(
+    join(workspaceRoot, ".devspace", "agents", "writer.md"),
+    [
+      "---",
+      "name: writer",
+      "description: Explicitly writable agent.",
+      "provider: codex",
+      "writeMode: allowed",
+      "---",
+      "",
+      "Writer body.",
+      "",
+    ].join("\n"),
+  );
+  const profilesWithAllowed = await loadLocalAgentProfiles(enabledConfig, workspaceRoot);
+  assert.deepEqual(profilesWithAllowed.map((profile) => profile.name), ["reviewer", "writer"]);
+  assert.equal(profilesWithAllowed.find((profile) => profile.name === "writer")?.writeMode, "allowed");
+
+  await writeFile(
+    join(workspaceRoot, ".devspace", "agents", "alias.md"),
+    [
+      "---",
+      "name: alias",
+      "description: Alias writable agent.",
+      "provider: codex",
+      "write_mode: allowed",
+      "---",
+      "",
+      "Alias body.",
+      "",
+    ].join("\n"),
+  );
+  const profilesWithAlias = await loadLocalAgentProfiles(enabledConfig, workspaceRoot);
+  assert.equal(profilesWithAlias.find((profile) => profile.name === "alias")?.writeMode, "allowed");
+
+  await writeFile(
+    join(workspaceRoot, ".devspace", "agents", "stable.md"),
+    [
+      "---",
+      "name: stable",
+      "description: Stable hash agent.",
+      "provider: codex",
+      "---",
+      "",
+      "Stable body.",
+      "",
+    ].join("\n"),
+  );
+  const stableBefore = (await loadLocalAgentProfiles(enabledConfig, workspaceRoot)).find(
+    (profile) => profile.name === "stable",
+  )?.profileHash;
+  await writeFile(
+    join(workspaceRoot, ".devspace", "agents", "stable.md"),
+    [
+      "---",
+      "name: stable",
+      "description: Stable hash agent.",
+      "provider: codex",
+      "---",
+      "",
+      "Stable body.",
+      "",
+    ].join("\r\n"),
+  );
+  const stableAfter = (await loadLocalAgentProfiles(enabledConfig, workspaceRoot)).find(
+    (profile) => profile.name === "stable",
+  )?.profileHash;
+  assert.equal(stableAfter, stableBefore);
+  await writeFile(
+    join(workspaceRoot, ".devspace", "agents", "stable.md"),
+    [
+      "---",
+      "name: stable",
+      "description: Stable hash agent.",
+      "provider: codex",
+      "---",
+      "",
+      "Changed body.",
+      "",
+    ].join("\n"),
+  );
+  const stableChanged = (await loadLocalAgentProfiles(enabledConfig, workspaceRoot)).find(
+    (profile) => profile.name === "stable",
+  )?.profileHash;
+  assert.notEqual(stableChanged, stableAfter);
 
   await writeFile(
     join(workspaceRoot, ".devspace", "agents", "custom.md"),
@@ -94,7 +185,58 @@ try {
     ].join("\n"),
   );
   const profilesWithInvalid = await loadLocalAgentProfiles(enabledConfig, workspaceRoot);
-  assert.deepEqual(profilesWithInvalid.map((profile) => profile.name), ["reviewer"]);
+  await writeFile(
+    join(workspaceRoot, ".devspace", "agents", "invalid-number.md"),
+    [
+      "---",
+      "name: invalid-number",
+      "description: Invalid write mode.",
+      "provider: codex",
+      "writeMode: 1",
+      "---",
+      "",
+      "Invalid body.",
+      "",
+    ].join("\n"),
+  );
+  await writeFile(
+    join(workspaceRoot, ".devspace", "agents", "invalid-value.md"),
+    [
+      "---",
+      "name: invalid-value",
+      "description: Invalid write mode.",
+      "provider: codex",
+      "writeMode: full_access",
+      "---",
+      "",
+      "Invalid body.",
+      "",
+    ].join("\n"),
+  );
+  await writeFile(
+    join(workspaceRoot, ".devspace", "agents", "conflicting-mode-keys.md"),
+    [
+      "---",
+      "name: conflicting-mode-keys",
+      "description: Conflicting write modes.",
+      "provider: codex",
+      "writeMode: read_only",
+      "write_mode: allowed",
+      "---",
+      "",
+      "Invalid body.",
+      "",
+    ].join("\n"),
+  );
+  const profilesAfterInvalid = await loadLocalAgentProfiles(enabledConfig, workspaceRoot);
+  assert.deepEqual(
+    profilesWithInvalid.map((profile) => profile.name),
+    ["alias", "reviewer", "stable", "writer"],
+  );
+  assert.deepEqual(
+    profilesAfterInvalid.map((profile) => profile.name),
+    ["alias", "reviewer", "stable", "writer"],
+  );
 
   const disabledConfig = loadConfig({
     DEVSPACE_CONFIG_DIR: configDir,

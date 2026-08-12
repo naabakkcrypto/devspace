@@ -27,6 +27,11 @@ const migrations: Migration[] = [
     name: "workspace-conversation-bindings",
     up: migrateWorkspaceConversationBindings,
   },
+  {
+    version: 5,
+    name: "local-agent-safety",
+    up: migrateLocalAgentSafety,
+  },
 ];
 
 export function migrateDatabase(sqlite: Database.Database): void {
@@ -195,6 +200,64 @@ function migrateWorkspaceConversationBindings(sqlite: Database.Database): void {
 
     create index if not exists workspace_conversation_bindings_workspace_idx
       on workspace_conversation_bindings(workspace_session_id);
+  `);
+}
+
+function migrateLocalAgentSafety(sqlite: Database.Database): void {
+  addColumnIfMissing(sqlite, "workspace_sessions", "capability_token", "text");
+  sqlite.exec(`
+    update workspace_sessions
+       set capability_token = lower(hex(randomblob(32)))
+     where capability_token is null or capability_token = '';
+  `);
+
+  addColumnIfMissing(sqlite, "local_agent_sessions", "write_mode", "text not null default 'read_only'");
+  addColumnIfMissing(sqlite, "local_agent_sessions", "workspace_mode", "text not null default 'checkout'");
+  addColumnIfMissing(sqlite, "local_agent_sessions", "profile_hash", "text");
+  addColumnIfMissing(sqlite, "local_agent_sessions", "run_id", "text");
+  addColumnIfMissing(sqlite, "local_agent_sessions", "runtime_identity_json", "text");
+  addColumnIfMissing(sqlite, "local_agent_sessions", "response_truncated", "text not null default 'false'");
+  sqlite.exec(`
+    update local_agent_sessions
+       set latest_response = substr(latest_response, 1, 65496) || char(10) || '[... local-agent output truncated ...]',
+           response_truncated = 'true'
+     where latest_response is not null and length(latest_response) > 65536;
+
+    update local_agent_sessions
+       set error = substr(error, 1, 16384)
+     where error is not null and length(error) > 16384;
+  `);
+
+  const writerRootExpression = process.platform === "win32"
+    ? "lower(workspace_root)"
+    : "workspace_root";
+  const duplicateWriterRoots = sqlite.prepare(
+    `select ${writerRootExpression} as root_key
+       from local_agent_sessions
+      where write_mode = 'allowed' and status in ('starting', 'running')
+      group by ${writerRootExpression}
+     having count(*) > 1`,
+  ).all() as Array<{ root_key: string }>;
+  const stopDuplicateWriters = sqlite.prepare(
+    `update local_agent_sessions
+        set status = 'error', run_id = null,
+            error = 'Migration stopped conflicting active writable sessions; verify the worktree before retrying.',
+            updated_at = ?
+      where ${writerRootExpression} = ?
+        and write_mode = 'allowed' and status in ('starting', 'running')`,
+  );
+  const reconciliationTime = new Date().toISOString();
+  for (const duplicate of duplicateWriterRoots) {
+    stopDuplicateWriters.run(reconciliationTime, duplicate.root_key);
+  }
+
+  sqlite.exec(`
+    create index if not exists local_agent_sessions_run_id_idx
+      on local_agent_sessions(run_id);
+
+    create unique index if not exists local_agent_sessions_active_writer_root_uidx
+      on local_agent_sessions(${writerRootExpression})
+      where write_mode = 'allowed' and status in ('starting', 'running');
   `);
 }
 

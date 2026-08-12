@@ -48,6 +48,15 @@ assert.equal(foreground.exitCode, 0);
 assert.match(foreground.output, /foreground/);
 assert.equal(foreground.sessionId, undefined);
 
+const splitUtf8 = await manager.start({
+  workspaceId: "workspace-a",
+  cwd: process.cwd(),
+  command: `${node} -e "process.stdout.write(Buffer.from([240,159])); setTimeout(() => process.stdout.write(Buffer.from([152,128])), 20)"`,
+  yieldTimeMs: 2_000,
+});
+assert.equal(splitUtf8.running, false);
+assert.equal(splitUtf8.output, "😀");
+
 const environment = await manager.start({
   workspaceId: "workspace-a",
   workspaceRoot: "/tmp/devspace-workspace-a",

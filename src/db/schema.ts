@@ -11,6 +11,9 @@ export const workspaceSessions = sqliteTable(
     baseRef: text("base_ref"),
     baseSha: text("base_sha"),
     managed: text("managed").notNull().default("false"),
+    // Kept physically nullable so a previous DevSpace binary can still insert
+    // sessions after a code rollback; current readers immediately self-heal it.
+    capabilityToken: text("capability_token"),
     createdAt: text("created_at").notNull(),
     lastUsedAt: text("last_used_at").notNull(),
   },
@@ -100,6 +103,12 @@ export const localAgentSessions = sqliteTable(
     provider: text("provider").notNull(),
     model: text("model"),
     thinking: text("thinking"),
+    writeMode: text("write_mode").notNull().default("read_only"),
+    workspaceMode: text("workspace_mode").notNull().default("checkout"),
+    profileHash: text("profile_hash"),
+    runId: text("run_id"),
+    runtimeIdentityJson: text("runtime_identity_json"),
+    responseTruncated: text("response_truncated").notNull().default("false"),
     providerSessionId: text("provider_session_id"),
     status: text("status").notNull(),
     latestResponse: text("latest_response"),
@@ -111,6 +120,7 @@ export const localAgentSessions = sqliteTable(
     index("local_agent_sessions_workspace_id_idx").on(table.workspaceId, table.updatedAt),
     index("local_agent_sessions_workspace_root_idx").on(table.workspaceRoot, table.updatedAt),
     index("local_agent_sessions_provider_session_id_idx").on(table.providerSessionId),
+    index("local_agent_sessions_run_id_idx").on(table.runId),
   ],
 );
 

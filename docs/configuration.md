@@ -147,12 +147,20 @@ from:
 - project `.devspace/agents/*.md`
 
 `open_workspace` returns a compact catalog containing profile names,
-descriptions, providers, and optional models/thinking levels so the host model can choose an
+descriptions, providers, optional models/thinking levels, `writeMode`, and a
+profile SHA-256 so the host model can choose an
 agent without reading provider-specific launch details. `devspace agents ls`
 lists existing subagent sessions for the current workspace, scoped by the
 workspace environment injected into shell commands. The `subagent-delegation`
 skill teaches the model to use only the minimal `devspace agents ls`,
 `devspace agents run`, and `devspace agents show` workflow.
+
+Profile `writeMode` defaults to `read_only`. `allowed` is accepted only for a
+Codex profile running in a managed worktree; `full_access` is invalid. Managed
+subagent execution is Codex-only until another adapter has executable sandbox
+proof. Catalog model, thinking, and mode values are requested configuration,
+not proof of what a provider executed. Session receipts therefore remain
+`requested_unverified` unless native observed identity evidence exists.
 
 Starter profile templates are available under `examples/agents/`. Copy or adapt
 them into one of the active profile directories before use.

@@ -5,6 +5,7 @@ description: Implementation profile for multi-file changes, careful refactors, a
 provider: claude
 model: sonnet
 thinking: high
+writeMode: allowed
 ---
 
 Take ownership of the requested implementation while keeping the change narrow.

@@ -5,6 +5,7 @@ description: Read-only profile for fast relevant-file discovery and small archit
 provider: opencode
 model: opencode/deepseek-v4-flash-free
 thinking: high
+writeMode: read_only
 ---
 
 Find the answer quickly without editing. Use this profile when the main need is

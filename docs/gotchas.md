@@ -228,6 +228,31 @@ compact profile catalog through `open_workspace`. The bundled
 `devspace agents ls` lists existing subagent sessions, not profile
 definitions.
 
+Subagent commands are bound to the active workspace session and reject a
+session id from another workspace. Profiles default to `read_only`; writable
+Codex profiles require a managed worktree and only one writer may be active in
+that worktree. Prompts are transported to the detached worker through a
+bounded, hashed one-shot pipe rather than a temporary file. Stored responses
+and provider errors are bounded and marked when truncated.
+
+Active runs emit a database heartbeat. A stale `starting` run can be claimed
+again after 90 seconds; a stale `running` read-only run can also be reclaimed
+because an older worker cannot write and its later database update is fenced by
+`run_id`. A stale running writer remains locked deliberately: inspect or
+discard its isolated managed worktree and confirm the old process has stopped
+before opening a replacement worktree. This fail-closed behavior prevents two
+writers from sharing one worktree after an unprovable crash.
+
+Provider/model/thinking/write-mode values in the catalog are requested
+configuration. They remain `requested_unverified` in the receipt unless the
+provider supplies native observed evidence. Non-Codex managed runs fail closed
+until their adapters prove equivalent sandbox behavior.
+
+The native runtime may enforce a stricter sandbox than the requested mode. If
+an `allowed` worktree canary remains read-only, keep the profile read-only and
+let the parent integrate its proposed patch. Never bypass approvals or the
+sandbox to make a writable canary pass.
+
 Packaged agent profile examples under `examples/agents/` are starter templates.
 Copy or adapt them into one of the active profile directories before use.
 

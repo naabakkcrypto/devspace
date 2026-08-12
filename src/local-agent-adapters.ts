@@ -1,11 +1,19 @@
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { resolve } from "node:path";
 import { Readable, Writable } from "node:stream";
+import { StringDecoder } from "node:string_decoder";
 import type { EffortLevel } from "@anthropic-ai/claude-agent-sdk";
 import type { LocalAgentProvider } from "./local-agent-profiles.js";
 import { removeDevspaceNodeModulesBinFromPath } from "./local-agent-path.js";
 import {
+  createIsolatedCodexEnvironment,
   createCodexSdkLocalAgentRuntime,
+  MAX_LOCAL_AGENT_FINAL_RESPONSE_CHARACTERS,
+  MAX_LOCAL_AGENT_PROVIDER_ERROR_CHARACTERS,
+  isLocalAgentTextTruncated,
+  requestedRuntimeIdentity,
+  resolvePreferredCodexExecutable,
+  truncateLocalAgentText,
   type LocalAgentRunInput,
   type LocalAgentRunResult,
 } from "./local-agent-runtime.js";
@@ -21,11 +29,20 @@ const ACP_COMMANDS: Record<"cursor" | "copilot", [string, ...string[]]> = {
 };
 const PI_AGENT_TIMEOUT_MS = 120_000;
 
-export async function runLocalAgentProvider(
+export async function runManagedLocalAgentProvider(
   provider: LocalAgentProvider,
   input: LocalAgentRunInput,
 ): Promise<LocalAgentRunResult> {
+  assertManagedLocalAgentRun(provider);
   return createLocalAgentAdapter(provider).run(input);
+}
+
+export function assertManagedLocalAgentRun(provider: LocalAgentProvider): void {
+  if (provider !== "codex") {
+    throw new Error(
+      `Managed subagent execution currently supports Codex only; ${provider} remains an unverified catalog candidate.`,
+    );
+  }
 }
 
 export function createLocalAgentAdapter(provider: LocalAgentProvider): LocalAgentAdapter {
@@ -48,8 +65,17 @@ class CodexLocalAgentAdapter implements LocalAgentAdapter {
   readonly provider = "codex" as const;
 
   async run(input: LocalAgentRunInput): Promise<LocalAgentRunResult> {
-    const runtime = await createCodexSdkLocalAgentRuntime();
-    return runtime.run(input);
+    const isolation = createIsolatedCodexEnvironment();
+    try {
+      const codexPathOverride = resolvePreferredCodexExecutable(process.env);
+      const runtime = await createCodexSdkLocalAgentRuntime({
+        env: isolation.env,
+        ...(codexPathOverride ? { codexPathOverride } : {}),
+      });
+      return await runtime.run(input);
+    } finally {
+      await isolation.dispose();
+    }
   }
 }
 
@@ -75,9 +101,7 @@ class ClaudeLocalAgentAdapter implements LocalAgentAdapter {
 
     let providerSessionId = input.providerSessionId ?? null;
     let finalResponse = "";
-    const items: unknown[] = [];
     for await (const message of messages) {
-      items.push(message);
       const record = message as Record<string, unknown>;
       if (typeof record.session_id === "string") providerSessionId = record.session_id;
       if (record.type === "result" && typeof record.result === "string") {
@@ -88,11 +112,13 @@ class ClaudeLocalAgentAdapter implements LocalAgentAdapter {
     }
 
     finalResponse = requireFinalResponse("Claude", finalResponse);
+    const bounded = truncateLocalAgentText(finalResponse, MAX_LOCAL_AGENT_FINAL_RESPONSE_CHARACTERS);
     return {
       provider: this.provider,
       providerSessionId,
-      finalResponse,
-      items,
+      finalResponse: bounded.text,
+      responseTruncated: bounded.truncated,
+      runtimeIdentity: requestedRuntimeIdentity(this.provider, input),
     };
   }
 }
@@ -153,11 +179,13 @@ class OpencodeLocalAgentAdapter implements LocalAgentAdapter {
         "OpenCode",
         extractOpenCodeFinalResponse(messages) || extractOpenCodeFinalResponse(promptResult),
       );
+      const bounded = truncateLocalAgentText(finalResponse, MAX_LOCAL_AGENT_FINAL_RESPONSE_CHARACTERS);
       return {
         provider: this.provider,
         providerSessionId: sessionId,
-        finalResponse,
-        items: [promptResult, messages],
+        finalResponse: bounded.text,
+        responseTruncated: bounded.truncated || isLocalAgentTextTruncated(finalResponse),
+        runtimeIdentity: requestedRuntimeIdentity(this.provider, input),
       };
     } finally {
       server.close();
@@ -184,8 +212,13 @@ class AcpLocalAgentAdapter implements LocalAgentAdapter {
     });
     assertPipedChild(child);
     let stderr = "";
+    const stderrDecoder = new StringDecoder("utf8");
     child.stderr.on("data", (chunk: Buffer) => {
-      stderr += chunk.toString("utf8");
+      stderr = appendBoundedText(
+        stderr,
+        stderrDecoder.write(chunk),
+        MAX_LOCAL_AGENT_PROVIDER_ERROR_CHARACTERS,
+      );
     });
 
     const stream = ndJsonStream(
@@ -214,30 +247,46 @@ class AcpLocalAgentAdapter implements LocalAgentAdapter {
               await context.request(methods.agent.session.setConfigOption, config);
             }
             const prompt = session.prompt(input.prompt);
-            const textParts: string[] = [];
+            let text = "";
             for (;;) {
               const message = await session.nextUpdate();
               if (message.kind === "stop") {
                 await prompt;
-                return textParts.join("").trim();
+                return text.trim();
               }
 
               const update = message.update;
               if (update.sessionUpdate !== "agent_message_chunk") continue;
               const content = update.content;
-              if (content.type === "text") textParts.push(content.text);
+              if (content.type === "text") {
+                text = appendBoundedText(
+                  text,
+                  content.text,
+                  MAX_LOCAL_AGENT_FINAL_RESPONSE_CHARACTERS,
+                );
+              }
             }
           } finally {
             session.dispose();
           }
         });
+      const bounded = truncateLocalAgentText(
+        finalResponse.trim(),
+        MAX_LOCAL_AGENT_FINAL_RESPONSE_CHARACTERS,
+      );
       return {
         provider: this.provider,
         providerSessionId,
-        finalResponse: finalResponse.trim(),
-        items: [],
+        finalResponse: bounded.text,
+        responseTruncated: bounded.truncated || isLocalAgentTextTruncated(finalResponse),
+        runtimeIdentity: requestedRuntimeIdentity(this.provider, input),
       };
     } catch (error) {
+      stderr = appendBoundedText(
+        stderr,
+        stderrDecoder.end(),
+        MAX_LOCAL_AGENT_PROVIDER_ERROR_CHARACTERS,
+      );
       throw new Error(`${this.provider} ACP run failed: ${errorMessage(error)}${stderr ? `\n${stderr.trim()}` : ""}`);
     } finally {
       child.kill();
@@ -346,8 +395,26 @@ class PiRpcLocalAgentAdapter implements LocalAgentAdapter {
     });
     assertPipedChild(child);
     const rpc = new JsonLineRpc(child);
-    const events: unknown[] = [];
-    rpc.onEvent((event) => events.push(event));
+    let streamingText = "";
+    let streamingError = "";
+    rpc.onEvent((event) => {
+      const text = extractPiStreamingText([event], { trim: false });
+      if (text) {
+        streamingText = appendBoundedText(
+          streamingText,
+          text,
+          MAX_LOCAL_AGENT_FINAL_RESPONSE_CHARACTERS,
+        );
+      }
+      const providerError = extractPiProviderError(event);
+      if (providerError) {
+        streamingError = appendBoundedText(
+          streamingError,
+          providerError,
+          MAX_LOCAL_AGENT_PROVIDER_ERROR_CHARACTERS,
+        );
+      }
+    });
     try {
       const state = await rpc.request({ type: "get_state" });
       const providerSessionId = readNestedString(state, ["sessionId"]) ?? input.providerSessionId ?? null;
@@ -355,23 +422,29 @@ class PiRpcLocalAgentAdapter implements LocalAgentAdapter {
       await rpc.request({ type: "prompt", message: input.prompt });
       const agentEnd = await done;
       const sessionMessages = await rpc.request({ type: "get_messages" });
-      const finalResponse =
+      const finalResponse = (
         extractPiFinalResponse(agentEnd) ||
         extractPiFinalResponse(sessionMessages) ||
-        extractPiStreamingText(events);
+        streamingText
+      ).trim();
       if (!finalResponse) {
         const providerError =
           extractPiProviderError(agentEnd) ||
           extractPiProviderError(sessionMessages) ||
-          extractPiProviderError(events);
+          streamingError;
         if (providerError) throw new Error(`Pi returned an error: ${providerError}`);
       }
       requireFinalResponse("Pi", finalResponse);
+      const bounded = truncateLocalAgentText(
+        finalResponse,
+        MAX_LOCAL_AGENT_FINAL_RESPONSE_CHARACTERS,
+      );
       return {
         provider: this.provider,
         providerSessionId,
-        finalResponse,
-        items: [...events, sessionMessages],
+        finalResponse: bounded.text,
+        responseTruncated: bounded.truncated || isLocalAgentTextTruncated(finalResponse),
+        runtimeIdentity: requestedRuntimeIdentity(this.provider, input),
       };
     } finally {
       child.kill();
@@ -399,14 +472,26 @@ class JsonLineRpc {
   private buffer = "";
   private nextId = 1;
   private stderr = "";
+  private readonly stdoutDecoder = new StringDecoder("utf8");
+  private readonly stderrDecoder = new StringDecoder("utf8");
   private fatalError: Error | undefined;
 
   constructor(private readonly child: ChildProcessWithoutNullStreams) {
-    child.stdout.on("data", (chunk: Buffer) => this.handleStdout(chunk.toString("utf8")));
+    child.stdout.on("data", (chunk: Buffer) => this.handleStdout(this.stdoutDecoder.write(chunk)));
     child.stderr.on("data", (chunk: Buffer) => {
-      this.stderr += chunk.toString("utf8");
+      this.stderr = appendBoundedText(
+        this.stderr,
+        this.stderrDecoder.write(chunk),
+        MAX_LOCAL_AGENT_PROVIDER_ERROR_CHARACTERS,
+      );
     });
     child.on("exit", (code, signal) => {
+      this.handleStdout(this.stdoutDecoder.end());
+      this.stderr = appendBoundedText(
+        this.stderr,
+        this.stderrDecoder.end(),
+        MAX_LOCAL_AGENT_PROVIDER_ERROR_CHARACTERS,
+      );
       this.failAll(new Error(`Pi RPC process exited with code ${code ?? "null"} and signal ${signal ?? "null"}\n${this.stderr}`.trim()));
     });
   }
@@ -445,6 +530,11 @@ class JsonLineRpc {
 
   private handleStdout(chunk: string): void {
     this.buffer += chunk;
+    if (this.buffer.length > MAX_LOCAL_AGENT_FINAL_RESPONSE_CHARACTERS * 4) {
+      this.buffer = "";
+      this.failAll(new Error("Pi RPC emitted an oversized JSON line."));
+      return;
+    }
     for (;;) {
       const newline = this.buffer.indexOf("\n");
       if (newline === -1) return;
@@ -484,6 +574,11 @@ class JsonLineRpc {
     }
     this.pending.clear();
   }
+}
+
+function appendBoundedText(current: string, chunk: string, maximum: number): string {
+  if (!chunk) return current;
+  return truncateLocalAgentText(`${current}${chunk}`, maximum).text;
 }
 
 async function createOpencodeSession(client: unknown, input: LocalAgentRunInput): Promise<string> {
@@ -587,8 +682,11 @@ export function extractPiFinalResponse(value: unknown): string {
   return "";
 }
 
-export function extractPiStreamingText(events: unknown[]): string {
-  return events
+export function extractPiStreamingText(
+  events: unknown[],
+  options: { trim?: boolean } = {},
+): string {
+  const text = events
     .map((event) => {
       const record = asRecord(event);
       if (!record || record.type !== "message_update") return "";
@@ -597,8 +695,8 @@ export function extractPiStreamingText(events: unknown[]): string {
       return typeof update.delta === "string" ? update.delta : "";
     })
     .filter(Boolean)
-    .join("")
-    .trim();
+    .join("");
+  return options.trim === false ? text : text.trim();
 }
 
 export function extractPiProviderError(value: unknown): string {

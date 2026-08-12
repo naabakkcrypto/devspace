@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { delimiter } from "node:path";
 import {
+  assertManagedLocalAgentRun,
   claudeCommandEnvironment,
   createLocalAgentAdapter,
   extractOpenCodeFinalResponse,
@@ -10,7 +11,17 @@ import {
   piCommandEnvironment,
   resolveAcpModelConfigUpdate,
   resolveAcpThinkingConfigUpdate,
+  runManagedLocalAgentProvider,
 } from "./local-agent-adapters.js";
+
+assert.doesNotThrow(() => assertManagedLocalAgentRun("codex"));
+for (const provider of ["claude", "opencode", "pi", "cursor", "copilot"] as const) {
+  assert.throws(() => assertManagedLocalAgentRun(provider), /Codex only/);
+  await assert.rejects(
+    () => runManagedLocalAgentProvider(provider, { prompt: "test", workspace: process.cwd() }),
+    /Codex only/,
+  );
+}
 import { removeDevspaceNodeModulesBinFromPath } from "./local-agent-path.js";
 import type { LocalAgentProvider } from "./local-agent-profiles.js";
 
@@ -362,6 +373,16 @@ assert.equal(
     },
   ]),
   "Final Pi response.",
+);
+
+const piDelta = (delta: string) => ({
+  type: "message_update",
+  assistantMessageEvent: { type: "text_delta", delta },
+});
+assert.equal(
+  extractPiStreamingText([piDelta("Final ")], { trim: false }) +
+    extractPiStreamingText([piDelta("response.")], { trim: false }),
+  "Final response.",
 );
 
 {

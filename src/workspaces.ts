@@ -55,6 +55,7 @@ export interface Workspace {
   skills: LoadedSkills["skills"];
   skillDiagnostics: LoadedSkills["diagnostics"];
   agentProfiles: LocalAgentProfile[];
+  capabilityToken: string;
   activatedSkillDirs: Set<string>;
 }
 
@@ -275,6 +276,7 @@ export class WorkspaceRegistry {
           : undefined,
       ...this.loadSkillsForWorkspace(root),
       agentProfiles: [],
+      capabilityToken: session.capabilityToken,
       activatedSkillDirs: new Set(),
     };
     this.store?.touchSession(workspaceId);
@@ -356,6 +358,7 @@ export class WorkspaceRegistry {
     sourceRoot?: string;
     worktree?: WorkspaceWorktree;
   }): Promise<WorkspaceContext> {
+    const capabilityToken = randomBytes(32).toString("hex");
     const workspace: Workspace = {
       id: `ws_${randomBytes(5).toString("hex")}`,
       root: input.root,
@@ -364,6 +367,7 @@ export class WorkspaceRegistry {
       worktree: input.worktree,
       ...this.loadSkillsForWorkspace(input.root),
       agentProfiles: await loadLocalAgentProfiles(this.config, input.root),
+      capabilityToken,
       activatedSkillDirs: new Set(),
     };
 
@@ -375,6 +379,7 @@ export class WorkspaceRegistry {
       baseRef: workspace.worktree?.baseRef,
       baseSha: workspace.worktree?.baseSha,
       managed: workspace.worktree?.managed,
+      capabilityToken,
     });
     this.workspaces.set(workspace.id, workspace);
     const agentsFiles = await this.loadInitialAgentsFiles(workspace.root);

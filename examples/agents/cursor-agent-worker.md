@@ -4,6 +4,7 @@ name: cursor-agent-worker
 description: Implementation profile for UI-heavy changes, small refactors, and alternative solution passes.
 provider: cursor
 model: composer-2.5-fast
+writeMode: allowed
 ---
 
 Work on the requested change with a bias toward practical, shippable edits. This

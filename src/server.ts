@@ -221,15 +221,17 @@ function formatVisibleAgent(agent: {
   provider: string;
   model?: string;
   thinking?: string;
+  writeMode?: string;
   providerAvailable?: boolean;
   providerUnavailableReason?: string;
 }): string {
   const model = agent.model ? `, model ${agent.model}` : "";
   const thinking = agent.thinking ? `, thinking ${agent.thinking}` : "";
+  const writeMode = agent.writeMode ? `, write ${agent.writeMode}` : "";
   const availability = agent.providerAvailable === false
     ? `, unavailable: ${agent.providerUnavailableReason ?? "provider unavailable"}`
     : "";
-  return `${agent.name} (${agent.provider}${model}${thinking}${availability})`;
+  return `${agent.name} (${agent.provider}${model}${thinking}${writeMode}${availability})`;
 }
 
 function formatUnavailableAgentProvider(provider: LocalAgentProviderAvailability): string {
@@ -264,6 +266,8 @@ const workspaceLocalAgentOutputSchema = z.object({
   provider: z.string(),
   model: z.string().optional(),
   thinking: z.string().optional(),
+  writeMode: z.enum(["read_only", "allowed"]),
+  profileHash: z.string(),
   providerAvailable: z.boolean().optional(),
   providerUnavailableReason: z.string().optional(),
 });
@@ -607,6 +611,8 @@ function registerCodexProcessTools(
         command: cmd,
         cwd,
         workspaceRoot: workspace.root,
+        workspaceMode: workspace.mode,
+        workspaceCapability: workspace.capabilityToken,
         tty,
         columns,
         rows,
@@ -828,10 +834,13 @@ export function createMcpServer(
       const cardAgents = workspace.agentProfiles.map((profile) => {
         const summary = summarizeLocalAgentProfile(profile);
         const availability = cardAgentProviders.find((provider) => provider.name === summary.provider);
+        const managedProvider = summary.provider === "codex";
         return {
           ...summary,
-          providerAvailable: availability?.available,
-          providerUnavailableReason: availability?.reason,
+          providerAvailable: managedProvider ? availability?.available : false,
+          providerUnavailableReason: managedProvider
+            ? availability?.reason
+            : "Managed subagent execution is currently Codex-only; this provider is catalog-only.",
         };
       });
       const cardAgentsFiles = agentsFiles.map((file) => ({

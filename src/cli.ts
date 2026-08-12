@@ -1,17 +1,15 @@
 #!/usr/bin/env node
 import { createRequire } from "node:module";
+import { randomUUID } from "node:crypto";
 import { stdin as input, stdout as output } from "node:process";
-import { spawn } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
-import { readFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { spawn, type ChildProcess } from "node:child_process";
+import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as prompts from "@clack/prompts";
 import { getShellConfig } from "@earendil-works/pi-coding-agent";
 import { satisfies } from "semver";
 import { loadConfig } from "./config.js";
-import { runLocalAgentProvider } from "./local-agent-adapters.js";
+import { assertManagedLocalAgentRun, runManagedLocalAgentProvider } from "./local-agent-adapters.js";
 import {
   isLocalAgentProvider,
   loadLocalAgentProfiles,
@@ -26,8 +24,19 @@ import {
   parseLocalAgentRunArgs,
   resolveLocalAgentTarget,
 } from "./local-agent-targets.js";
-import { createLocalAgentStore, type LocalAgentRecord } from "./local-agent-store.js";
-import type { LocalAgentRunResult } from "./local-agent-runtime.js";
+import {
+  createLocalAgentStore,
+  LOCAL_AGENT_HEARTBEAT_INTERVAL_MS,
+  LocalAgentStore,
+  type LocalAgentRecord,
+  type LocalAgentWorkspaceScope,
+} from "./local-agent-store.js";
+import {
+  createLocalAgentPromptEnvelope,
+  readLocalAgentPromptEnvelope,
+  safeLocalAgentEnvironment,
+  writePromptEnvelope,
+} from "./local-agent-transport.js";
 import {
   ensureDevspaceDefaultSkills,
   generateOwnerToken,
@@ -37,6 +46,7 @@ import {
   writeDevspaceConfig,
   type DevspaceUserConfig,
 } from "./user-config.js";
+import { terminateProcessTree } from "./process-platform.js";
 import { expandHomePath } from "./roots.js";
 import { shutdownHttpServer } from "./server-shutdown.js";
 
@@ -350,7 +360,7 @@ async function runAgentsCommand(args: string[]): Promise<void> {
 async function runAgentsList(): Promise<void> {
   const config = loadConfig();
   const store = createLocalAgentStore(config);
-  const agents = store.list(resolveCurrentWorkspaceScope());
+  const agents = store.listScoped(resolveCurrentWorkspaceScope());
 
   if (agents.length === 0) {
     console.log("No subagent sessions found for this workspace.");
@@ -367,29 +377,55 @@ async function runAgentsRun(args: string[]): Promise<void> {
 
   const config = loadConfig();
   const workspaceRoot = resolveCurrentWorkspaceRoot();
+  const scope = resolveCurrentWorkspaceScope();
   const store = createLocalAgentStore(config);
-  const existing = store.get(parsed.target);
+  let existing = store.getScoped(parsed.target, scope);
 
   if (existing) {
     if (!isLocalAgentProvider(existing.provider)) {
       throw new Error(`Unknown subagent provider for existing session: ${existing.provider}`);
     }
+    assertManagedLocalAgentRun(existing.provider);
     assertLocalAgentProviderAvailable(existing.provider);
-    const promptFile = writeAgentPromptFile(parsed.prompt);
-    store.update(existing.id, {
-      status: "starting",
+    const profiles = await loadLocalAgentProfiles(config, workspaceRoot);
+    const existingProfileName = existing.profileName;
+    const profile = existing.profileName === existing.provider
+      ? undefined
+      : profiles.find((candidate) => candidate.name === existingProfileName);
+    if (existing.profileName !== existing.provider) {
+      if (!profile) throw new Error(`Subagent profile not found: ${existing.profileName}`);
+      if (!existing.profileHash) {
+        existing = store.adoptLegacyProfileHash(existing.id, scope, profile.profileHash);
+      } else if (profile.profileHash !== existing.profileHash) {
+        throw new Error(`Subagent profile changed since session creation: ${existing.profileName}`);
+      }
+    }
+    const fullPrompt = profile ? composeLocalAgentPrompt(profile, parsed.prompt) : parsed.prompt;
+    const runId = randomUUID();
+    const claimed = store.claimRun(existing.id, scope, runId, {
       model: parsed.model ?? existing.model,
       thinking: parsed.thinking ?? existing.thinking,
-      latestResponse: undefined,
-      error: undefined,
     });
-    spawnAgentWorker(existing.id, promptFile);
-    console.log(formatAgentLine({
-      ...existing,
-      status: "running",
-      model: parsed.model ?? existing.model,
-      thinking: parsed.thinking ?? existing.thinking,
-    }));
+    try {
+      await spawnAgentWorker(
+        claimed.id,
+        runId,
+        fullPrompt,
+        scope,
+        config.stateDir,
+      );
+    } catch (error) {
+      try {
+        store.updateOwned(claimed.id, scope, runId, {
+          status: "error",
+          error: errorMessage(error),
+        });
+      } catch {
+        // The worker may already have persisted the same terminal failure.
+      }
+      throw error;
+    }
+    console.log(formatAgentLine(store.getScoped(claimed.id, scope) ?? claimed));
     return;
   }
 
@@ -400,20 +436,37 @@ async function runAgentsRun(args: string[]): Promise<void> {
       `Unknown subagent profile, provider, or id: ${parsed.target}. Available ${formatAvailableLocalAgentTargets(profiles)}`,
     );
   }
+  assertManagedLocalAgentRun(target.provider);
   assertLocalAgentProviderAvailable(target.provider);
 
-  const promptFile = writeAgentPromptFile(parsed.prompt);
-  const record = store.create({
-    workspaceId: process.env.DEVSPACE_WORKSPACE_ID,
-    workspaceRoot,
+  const fullPrompt = target.kind === "profile"
+    ? composeLocalAgentPrompt(target.profile, parsed.prompt)
+    : parsed.prompt;
+  const runId = randomUUID();
+  const record = store.createScoped(scope, {
     profileName: target.name,
+    profileHash: target.kind === "profile" ? target.profile.profileHash : undefined,
     provider: target.provider,
     model: target.model,
     thinking: target.thinking,
+    writeMode: target.writeMode,
+    runId,
   });
 
-  spawnAgentWorker(record.id, promptFile);
-  console.log(formatAgentLine({ ...record, status: "running" }));
+  try {
+    await spawnAgentWorker(record.id, runId, fullPrompt, scope, config.stateDir);
+  } catch (error) {
+    try {
+      store.updateOwned(record.id, scope, runId, {
+        status: "error",
+        error: errorMessage(error),
+      });
+    } catch {
+      // The worker may already have persisted the same terminal failure.
+    }
+    throw error;
+  }
+  console.log(formatAgentLine(store.getScoped(record.id, scope) ?? record));
 }
 
 async function runAgentsShow(args: string[]): Promise<void> {
@@ -422,16 +475,20 @@ async function runAgentsShow(args: string[]): Promise<void> {
 
   const config = loadConfig();
   const store = createLocalAgentStore(config);
-  let record = store.get(id);
+  const scope = resolveCurrentWorkspaceScope();
+  let record = store.getScoped(id, scope);
   if (!record) throw new Error(`Unknown subagent id: ${id}`);
 
   const deadline = Date.now() + 15_000;
   while ((record.status === "starting" || record.status === "running") && Date.now() < deadline) {
     await sleep(500);
-    record = store.get(id) ?? record;
+    record = store.getScoped(id, scope) ?? record;
   }
 
   console.log(formatAgentLine(record));
+  if (record.runtimeIdentity) {
+    console.log(`runtime_identity=${JSON.stringify(record.runtimeIdentity)}`);
+  }
   if (record.latestResponse) {
     console.log(record.latestResponse);
     return;
@@ -446,115 +503,202 @@ async function runAgentsShow(args: string[]): Promise<void> {
 }
 
 async function runAgentsWorker(args: string[]): Promise<void> {
-  const [id, promptFileFlag, promptFile] = args;
-  if (!id || promptFileFlag !== "--prompt-file" || !promptFile) {
-    throw new Error("Usage: devspace agents __worker <id> --prompt-file <path>");
+  const [id, runId] = args;
+  if (!id || !runId || args.length !== 2) {
+    throw new Error("Usage: devspace agents __worker <id> <run-id>");
   }
 
-  const config = loadConfig();
-  const store = createLocalAgentStore(config);
-  const record = store.get(id);
-  if (!record) throw new Error(`Unknown subagent id: ${id}`);
-
-  store.update(record.id, { status: "running", error: undefined });
+  const stateDir = process.env.DEVSPACE_STATE_DIR;
+  if (!stateDir) throw new Error("DEVSPACE_STATE_DIR is required for a subagent worker.");
+  const scope = resolveCurrentWorkspaceScope();
+  const store = new LocalAgentStore(stateDir);
+  let record: LocalAgentRecord | undefined;
+  let heartbeat: NodeJS.Timeout | undefined;
   try {
-    const profiles = await loadLocalAgentProfiles(config, record.workspaceRoot);
-    const profile = profiles.find((candidate) => candidate.name === record.profileName);
-    const prompt = await readFile(promptFile, "utf8");
-    const result = profile
-      ? await runLocalAgentProfile(profile, record, prompt)
-      : await runRawLocalAgentProvider(record, prompt);
-    store.update(record.id, {
+    record = store.claimWorker(id, scope, runId);
+    if (!isLocalAgentProvider(record.provider)) {
+      throw new Error(`Unknown subagent provider: ${record.provider}`);
+    }
+    assertManagedLocalAgentRun(record.provider);
+    heartbeat = setInterval(() => {
+      try {
+        store.heartbeatOwned(id, scope, runId);
+      } catch {
+        if (heartbeat) clearInterval(heartbeat);
+        heartbeat = undefined;
+      }
+    }, LOCAL_AGENT_HEARTBEAT_INTERVAL_MS);
+    heartbeat.unref();
+    const envelope = await readLocalAgentPromptEnvelope(process.stdin, { agentId: id, runId });
+    await sendWorkerAcknowledgement(id, runId);
+    const result = await runManagedLocalAgentProvider(record.provider, {
+      prompt: envelope.prompt,
+      workspace: record.workspaceRoot,
+      providerSessionId: record.providerSessionId,
+      writeMode: record.writeMode,
+      model: record.model,
+      thinking: record.thinking,
+    });
+    store.updateOwned(record.id, scope, runId, {
       providerSessionId: result.providerSessionId ?? undefined,
       status: "idle",
       latestResponse: result.finalResponse,
+      responseTruncated: result.responseTruncated,
+      runtimeIdentity: result.runtimeIdentity,
       error: undefined,
     });
   } catch (error) {
-    store.update(record.id, {
-      status: "error",
-      error: error instanceof Error ? error.message : String(error),
-    });
+    if (record) {
+      try {
+        store.updateOwned(record.id, scope, runId, {
+          status: "error",
+          error: errorMessage(error),
+        });
+      } catch {
+        // A stale worker cannot overwrite the current run.
+      }
+    }
+  } finally {
+    if (heartbeat) clearInterval(heartbeat);
+    store.close();
   }
 }
 
-async function runLocalAgentProfile(
-  profile: LocalAgentProfile,
-  record: LocalAgentRecord,
-  prompt: string,
-): Promise<LocalAgentRunResult> {
+function composeLocalAgentPrompt(profile: LocalAgentProfile, prompt: string): string {
   const body = profile.body.trim();
-  const fullPrompt = body ? `${body}\n\nTask:\n${prompt}` : prompt;
-  return runLocalAgentProvider(profile.provider, {
-    prompt: fullPrompt,
-    workspace: record.workspaceRoot,
-    providerSessionId: record.providerSessionId,
-    writeMode: "allowed",
-    model: record.model ?? profile.model,
-    thinking: record.thinking ?? profile.thinking,
-  });
+  return body ? `${body}\n\nTask:\n${prompt}` : prompt;
 }
 
-async function runRawLocalAgentProvider(
-  record: LocalAgentRecord,
+async function spawnAgentWorker(
+  agentId: string,
+  runId: string,
   prompt: string,
-): Promise<LocalAgentRunResult> {
-  if (record.profileName !== record.provider || !isLocalAgentProvider(record.provider)) {
-    throw new Error(`Subagent profile not found: ${record.profileName}`);
-  }
-
-  return runLocalAgentProvider(record.provider, {
-    prompt,
-    workspace: record.workspaceRoot,
-    providerSessionId: record.providerSessionId,
-    writeMode: "allowed",
-    model: record.model,
-    thinking: record.thinking,
-  });
-}
-
-function spawnAgentWorker(agentId: string, promptFile: string): void {
+  scope: LocalAgentWorkspaceScope,
+  stateDir: string,
+): Promise<void> {
+  const envelope = createLocalAgentPromptEnvelope({ agentId, runId, prompt });
   const child = spawn(process.execPath, [
     ...process.execArgv,
     fileURLToPath(import.meta.url),
     "agents",
     "__worker",
     agentId,
-    "--prompt-file",
-    promptFile,
+    runId,
   ], {
     detached: true,
-    stdio: "ignore",
-    env: process.env,
+    stdio: ["pipe", "ignore", "pipe", "ipc"],
+    windowsHide: true,
+    env: safeLocalAgentEnvironment(process.env, {
+      DEVSPACE_STATE_DIR: stateDir,
+      DEVSPACE_WORKSPACE_ID: scope.workspaceId,
+      DEVSPACE_WORKSPACE_ROOT: scope.workspaceRoot,
+      DEVSPACE_WORKSPACE_CAPABILITY: scope.workspaceCapability,
+    }),
   });
-  child.unref();
-}
-
-function writeAgentPromptFile(prompt: string): string {
-  const directory = mkdtempSync(join(tmpdir(), "devspace-agent-prompt-"));
-  const filePath = join(directory, "prompt.txt");
-  writeFileSync(filePath, prompt, { mode: 0o600 });
-  return filePath;
+  return deliverAgentPrompt(child, envelope, agentId, runId);
 }
 
 function resolveCurrentWorkspaceRoot(): string {
   return resolve(process.env.DEVSPACE_WORKSPACE_ROOT || process.cwd());
 }
 
-function resolveCurrentWorkspaceScope(): { workspaceId?: string; workspaceRoot: string } {
+function resolveCurrentWorkspaceScope(): LocalAgentWorkspaceScope {
+  const workspaceId = process.env.DEVSPACE_WORKSPACE_ID;
+  const workspaceCapability = process.env.DEVSPACE_WORKSPACE_CAPABILITY;
+  if (!workspaceId || !workspaceCapability) {
+    throw new Error(
+      "Subagent commands must run inside a DevSpace workspace process with a workspace capability.",
+    );
+  }
   return {
-    workspaceId: process.env.DEVSPACE_WORKSPACE_ID,
+    workspaceId,
     workspaceRoot: resolveCurrentWorkspaceRoot(),
+    workspaceCapability,
   };
 }
 
 function formatAgentLine(agent: Pick<
   LocalAgentRecord,
-  "id" | "status" | "profileName" | "provider" | "model" | "thinking"
+  "id" | "status" | "profileName" | "provider" | "model" | "thinking" | "writeMode"
 >): string {
-  const model = agent.model ? ` ${agent.model}` : "";
-  const thinking = agent.thinking ? ` thinking=${agent.thinking}` : "";
-  return `${agent.id} ${agent.status} ${agent.profileName} ${agent.provider}${model}${thinking}`;
+  const model = agent.model ? ` requested_model=${agent.model}` : "";
+  const thinking = agent.thinking ? ` requested_thinking=${agent.thinking}` : "";
+  return `${agent.id} ${agent.status} ${agent.profileName} ${agent.provider}${model}${thinking} requested_write=${agent.writeMode}`;
+}
+
+async function deliverAgentPrompt(
+  child: ChildProcess,
+  envelope: ReturnType<typeof createLocalAgentPromptEnvelope>,
+  agentId: string,
+  runId: string,
+): Promise<void> {
+  if (!child.stdin) throw new Error("Subagent worker stdin is unavailable.");
+  let preAcknowledgementError = "";
+  child.stderr?.setEncoding("utf8");
+  child.stderr?.on("data", (chunk: string) => {
+    const combined = `${preAcknowledgementError}${chunk}`;
+    preAcknowledgementError = combined.slice(-4_096);
+  });
+  await new Promise<void>((resolveSpawn, rejectSpawn) => {
+    child.once("spawn", resolveSpawn);
+    child.once("error", rejectSpawn);
+  });
+  const accepted = new Promise<void>((resolveAccepted, rejectAccepted) => {
+    const timer = setTimeout(() => rejectAccepted(new Error("Subagent worker prompt acknowledgement timed out.")), 10_000);
+    const cleanup = (): void => {
+      clearTimeout(timer);
+      child.off("message", onMessage);
+      child.off("exit", onExit);
+      child.off("error", onError);
+    };
+    const onMessage = (message: unknown): void => {
+      const value = message as { type?: unknown; agentId?: unknown; runId?: unknown };
+      if (
+        value?.type !== "local-agent-prompt-accepted" ||
+        value.agentId !== agentId ||
+        value.runId !== runId
+      ) return;
+      cleanup();
+      resolveAccepted();
+    };
+    const onExit = (code: number | null): void => {
+      cleanup();
+      const detail = preAcknowledgementError.trim();
+      rejectAccepted(new Error(
+        `Subagent worker exited before accepting its prompt (code ${code ?? "null"}).${detail ? ` ${detail}` : ""}`,
+      ));
+    };
+    const onError = (error: Error): void => {
+      cleanup();
+      rejectAccepted(error);
+    };
+    child.on("message", onMessage);
+    child.once("exit", onExit);
+    child.once("error", onError);
+  });
+  try {
+    await writePromptEnvelope(child.stdin, envelope);
+    await accepted;
+  } catch (error) {
+    terminateProcessTree(child, "SIGTERM", true);
+    throw error;
+  }
+  if (child.connected) child.disconnect();
+  child.unref();
+}
+
+async function sendWorkerAcknowledgement(agentId: string, runId: string): Promise<void> {
+  if (!process.send) throw new Error("Subagent worker IPC is unavailable.");
+  await new Promise<void>((resolveSend, rejectSend) => {
+    process.send?.(
+      { type: "local-agent-prompt-accepted", agentId, runId },
+      (error) => error ? rejectSend(error) : resolveSend(),
+    );
+  });
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function sleep(ms: number): Promise<void> {

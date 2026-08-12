@@ -7,6 +7,7 @@ import test, { type TestContext } from "node:test";
 import { promisify } from "node:util";
 import { loadConfig, type ServerConfig } from "./config.js";
 import { GitWorktreeError } from "./git-worktrees.js";
+import { LocalAgentStore } from "./local-agent-store.js";
 import { SqliteWorkspaceStore } from "./workspace-store.js";
 import { WorkspaceRegistry } from "./workspaces.js";
 
@@ -120,10 +121,33 @@ test("persisted checkout and worktree sessions restore after recreating the regi
 
     assert.equal(restoredCheckout.root, context.root);
     assert.equal(restoredCheckout.mode, "checkout");
+    assert.equal(restoredCheckout.capabilityToken, checkout.workspace.capabilityToken);
+    assert.equal(restoredWorktree.capabilityToken, worktree.workspace.capabilityToken);
     assert.equal(restoredWorktree.root, worktree.workspace.root);
     assert.equal(restoredWorktree.mode, "worktree");
     assert.equal(restoredWorktree.sourceRoot, gitRoot);
     assert.equal(restoredWorktree.worktree?.managed, true);
+    const agentStore = new LocalAgentStore(stateDir);
+    try {
+      assert.equal(
+        agentStore.verifyWorkspaceScope({
+          workspaceId: restoredCheckout.id,
+          workspaceRoot: restoredCheckout.root,
+          workspaceCapability: restoredCheckout.capabilityToken,
+        }).workspaceId,
+        restoredCheckout.id,
+      );
+      assert.throws(
+        () => agentStore.verifyWorkspaceScope({
+          workspaceId: restoredCheckout.id,
+          workspaceRoot: restoredCheckout.root,
+          workspaceCapability: "stale-capability",
+        }),
+        /capability is invalid/,
+      );
+    } finally {
+      agentStore.close();
+    }
   } finally {
     secondStore.close();
   }

@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { StringDecoder } from "node:string_decoder";
 import { resolveShellCommand, terminateProcessTree } from "./process-platform.js";
 
 const DEFAULT_EXEC_YIELD_MS = 10_000;
@@ -17,6 +18,8 @@ export interface StartCommandInput {
   command: string;
   cwd: string;
   workspaceRoot?: string;
+  workspaceMode?: "checkout" | "worktree";
+  workspaceCapability?: string;
   tty?: boolean;
   columns?: number;
   rows?: number;
@@ -90,6 +93,8 @@ function terminalSize(value: number | undefined, fallback: number): number {
 function processEnvironment(input?: {
   workspaceId?: string;
   workspaceRoot?: string;
+  workspaceMode?: "checkout" | "worktree";
+  workspaceCapability?: string;
 }): Record<string, string> {
   return {
     ...Object.fromEntries(
@@ -105,6 +110,10 @@ function processEnvironment(input?: {
     LC_ALL: process.env.LC_ALL ?? "C.UTF-8",
     ...(input?.workspaceId ? { DEVSPACE_WORKSPACE_ID: input.workspaceId } : {}),
     ...(input?.workspaceRoot ? { DEVSPACE_WORKSPACE_ROOT: input.workspaceRoot } : {}),
+    ...(input?.workspaceMode ? { DEVSPACE_WORKSPACE_MODE: input.workspaceMode } : {}),
+    ...(input?.workspaceCapability
+      ? { DEVSPACE_WORKSPACE_CAPABILITY: input.workspaceCapability }
+      : {}),
   };
 }
 
@@ -330,6 +339,8 @@ export class ProcessSessionManager {
       env: processEnvironment({
         workspaceId: input.workspaceId,
         workspaceRoot: input.workspaceRoot,
+        workspaceMode: input.workspaceMode,
+        workspaceCapability: input.workspaceCapability,
       }),
       stdio: "pipe",
       windowsHide: true,
@@ -342,10 +353,16 @@ export class ProcessSessionManager {
       kill: (signal = "SIGTERM") => terminateProcessTree(child, signal, detached),
       resize: input.tty ? () => undefined : undefined,
     };
-    child.stdout.on("data", (data: Buffer) => this.append(session, data.toString("utf8")));
-    child.stderr.on("data", (data: Buffer) => this.append(session, data.toString("utf8")));
+    const stdoutDecoder = new StringDecoder("utf8");
+    const stderrDecoder = new StringDecoder("utf8");
+    child.stdout.on("data", (data: Buffer) => this.append(session, stdoutDecoder.write(data)));
+    child.stderr.on("data", (data: Buffer) => this.append(session, stderrDecoder.write(data)));
     child.on("error", (error) => this.append(session, `${error.message}\n`));
-    child.on("close", (code, signal) => this.finish(session, code ?? undefined, signal ?? undefined));
+    child.on("close", (code, signal) => {
+      this.append(session, stdoutDecoder.end());
+      this.append(session, stderrDecoder.end());
+      this.finish(session, code ?? undefined, signal ?? undefined);
+    });
   }
 
   private async startPty(session: ProcessSession, input: StartCommandInput): Promise<void> {
@@ -364,6 +381,8 @@ export class ProcessSessionManager {
         env: processEnvironment({
           workspaceId: input.workspaceId,
           workspaceRoot: input.workspaceRoot,
+          workspaceMode: input.workspaceMode,
+          workspaceCapability: input.workspaceCapability,
         }),
         name: "xterm-256color",
         cols: session.columns,

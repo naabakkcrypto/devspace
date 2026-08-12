@@ -13,6 +13,8 @@ const profiles: LocalAgentProfile[] = [
     provider: "codex",
     model: "gpt-5-codex",
     thinking: "high",
+    writeMode: "allowed",
+    profileHash: "a".repeat(64),
     filePath: "/workspace/.devspace/agents/reviewer.md",
     body: "Review carefully.",
     disabled: false,
@@ -24,6 +26,8 @@ const profiles: LocalAgentProfile[] = [
     model: "qwen/custom",
     filePath: "/workspace/.devspace/agents/claude.md",
     body: "Use OpenCode.",
+    writeMode: "read_only",
+    profileHash: "b".repeat(64),
     disabled: false,
   },
 ];
@@ -80,6 +84,7 @@ assert.throws(
   assert.equal(target?.provider, "codex");
   assert.equal(target?.model, "gpt-5-codex");
   assert.equal(target?.thinking, "high");
+  assert.equal(target?.writeMode, "allowed");
 }
 
 {
@@ -96,6 +101,7 @@ assert.throws(
   assert.equal(target?.provider, "opencode");
   assert.equal(target?.model, undefined);
   assert.equal(target?.thinking, undefined);
+  assert.equal(target?.writeMode, "read_only");
 }
 
 {

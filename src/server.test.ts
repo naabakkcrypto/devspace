@@ -39,6 +39,13 @@ test("open_workspace keeps lifecycle flags out of model output and preserves com
   assert.ok(Array.isArray(firstStructured.skills));
   assert.ok(Array.isArray(firstStructured.agentProviders));
   assert.ok(Array.isArray(firstStructured.agents));
+  const firstAgent = (firstStructured.agents as Array<Record<string, unknown>>)[0];
+  assert.equal(firstAgent?.writeMode, "read_only");
+  assert.match(String(firstAgent?.profileHash), /^[a-f0-9]{64}$/);
+  const catalogOnlyAgent = (firstStructured.agents as Array<Record<string, unknown>>)
+    .find((agent) => agent.name === "z-claude-catalog");
+  assert.equal(catalogOnlyAgent?.providerAvailable, false);
+  assert.match(String(catalogOnlyAgent?.providerUnavailableReason), /Codex-only|catalog-only/);
   assert.ok(Array.isArray(firstStructured.skillDiagnostics));
   assert.equal("workspaceReused" in firstStructured, false);
   assert.equal("includeBootstrapContext" in firstStructured, false);
@@ -232,6 +239,14 @@ async function fixture(t: TestContext, options: FixtureOptions = {}): Promise<Se
     "---",
     "Review changes.",
   ].join("\n"));
+  await writeFile(join(project, ".devspace", "agents", "z-claude-catalog.md"), [
+    "---",
+    "name: z-claude-catalog",
+    "description: Catalog-only compatibility profile.",
+    "provider: claude",
+    "---",
+    "Review changes.",
+  ].join("\n"));
 
   if (options.git) {
     await writeFile(join(project, "README.md"), "hello\n");
@@ -247,6 +262,7 @@ async function fixture(t: TestContext, options: FixtureOptions = {}): Promise<Se
     DEVSPACE_ALLOWED_ROOTS: root,
     DEVSPACE_WORKTREE_ROOT: join(root, ".worktrees"),
     DEVSPACE_AGENT_DIR: agentDir,
+    DEVSPACE_SUBAGENTS: "1",
     DEVSPACE_WIDGETS: options.widgets ?? "full",
     DEVSPACE_TOOL_MODE: options.toolMode ?? "full",
     DEVSPACE_OAUTH_OWNER_TOKEN: "test-owner-token-that-is-long-enough",
