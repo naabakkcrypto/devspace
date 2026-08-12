@@ -7,7 +7,12 @@ import test, { type TestContext } from "node:test";
 import { promisify } from "node:util";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { loadConfig, type ServerConfig } from "./config.js";
+import {
+  loadConfig,
+  type ServerConfig,
+  type ToolMode,
+  type WidgetMode,
+} from "./config.js";
 import { createReviewCheckpointManager } from "./review-checkpoints.js";
 import { ProcessSessionManager } from "./process-sessions.js";
 import { createMcpServer } from "./server.js";
@@ -167,6 +172,30 @@ test("checkout reuse and context suppression survive a registry restart", async 
   }
 });
 
+test("codex mode directs related inspections through one bounded command", async (t) => {
+  const context = await fixture(t, { toolMode: "codex", widgets: "off" });
+
+  const instructions = context.client.getInstructions() ?? "";
+  assert.match(instructions, /Use read for one direct file read\./);
+  assert.match(
+    instructions,
+    /two or more related files or searches, prefer one bounded exec_command/i,
+  );
+
+  const tools = await context.client.listTools();
+  const readTool = tools.tools.find((tool) => tool.name === "read");
+  const execTool = tools.tools.find((tool) => tool.name === "exec_command");
+  assert.match(readTool?.description ?? "", /Read one directly named file/i);
+  assert.match(
+    readTool?.description ?? "",
+    /two or more related files or searches, prefer one bounded exec_command/i,
+  );
+  assert.match(
+    execTool?.description ?? "",
+    /two or more related files or searches, prefer one bounded command/i,
+  );
+});
+
 interface ServerFixture {
   client: Client;
   project: string;
@@ -175,7 +204,13 @@ interface ServerFixture {
   close: () => Promise<void>;
 }
 
-async function fixture(t: TestContext, options: { git?: boolean } = {}): Promise<ServerFixture> {
+interface FixtureOptions {
+  git?: boolean;
+  toolMode?: ToolMode;
+  widgets?: WidgetMode;
+}
+
+async function fixture(t: TestContext, options: FixtureOptions = {}): Promise<ServerFixture> {
   const root = await mkdtemp(join(tmpdir(), "devspace-server-test-"));
   const project = join(root, "project");
   const agentDir = join(root, "agent");
@@ -208,8 +243,8 @@ async function fixture(t: TestContext, options: { git?: boolean } = {}): Promise
     DEVSPACE_ALLOWED_ROOTS: root,
     DEVSPACE_WORKTREE_ROOT: join(root, ".worktrees"),
     DEVSPACE_AGENT_DIR: agentDir,
-    DEVSPACE_WIDGETS: "full",
-    DEVSPACE_TOOL_MODE: "full",
+    DEVSPACE_WIDGETS: options.widgets ?? "full",
+    DEVSPACE_TOOL_MODE: options.toolMode ?? "full",
     DEVSPACE_OAUTH_OWNER_TOKEN: "test-owner-token-that-is-long-enough",
     PORT: "1",
   });
