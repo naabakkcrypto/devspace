@@ -200,7 +200,7 @@ function serverInstructions(config: ServerConfig): string {
       : "";
 
   if (config.toolMode === "codex") {
-    return `Use DevSpace for coding work. Call ${toolNames.openWorkspace} once for each project folder or isolated worktree, then keep using its workspaceId. During continued work in the same project or worktree, do not call ${toolNames.openWorkspace} again. Open another workspace only when changing projects, switching checkout/worktree mode, creating another isolated worktree, or when the current workspaceId is rejected. Use ${toolNames.read} for one direct file read. When inspecting two or more related files or searches, prefer one bounded exec_command that returns only the relevant sections instead of splitting the inspection across repeated visible tool calls. Use apply_patch for all file modifications, exec_command for tests, builds, and other commands, and write_stdin to poll or interact with running processes. Follow instructions returned by ${toolNames.openWorkspace}; read applicable instruction and skill files before working in their scope.${artifactInstruction}${showChangesInstruction}`;
+    return `Use DevSpace for coding work. Call ${toolNames.openWorkspace} once for each project folder or isolated worktree, then keep using its workspaceId. During continued work in the same project or worktree, do not call ${toolNames.openWorkspace} again. Open another workspace only when changing projects, switching checkout/worktree mode, creating another isolated worktree, or when the current workspaceId is rejected. Choose the inspection strategy that maximizes completeness, correctness, and verifiability. Use ${toolNames.read} for directly named files and exec_command for searches, multi-file inspection, tests, builds, and other commands. Use as many read or exec_command calls as needed. Group related inspections only when this preserves complete relevant evidence and clear file provenance. Split the work whenever output size, ambiguity, truncation risk, or independent verification makes separate calls safer. Never omit relevant evidence merely to reduce visible tool calls, output volume, or token use. Use apply_patch for all file modifications and write_stdin to poll or interact with running processes. Follow instructions returned by ${toolNames.openWorkspace}; read applicable instruction and skill files before working in their scope.${artifactInstruction}${showChangesInstruction}`;
   }
 
   const inspection = config.toolMode !== "full"
@@ -565,7 +565,7 @@ function registerCodexProcessTools(
     {
       title: "Execute command",
       description:
-        "Run a command in a workspace. Returns its result when it exits during the yield window, otherwise returns a sessionId for write_stdin. When inspecting two or more related files or searches, prefer one bounded command with scoped output over repeated tool calls. Use this for tests, builds, package scripts, and long-running processes.",
+        "Run a command in a workspace. Returns its result when it exits during the yield window, otherwise returns a sessionId for write_stdin. Group related inspections only when this preserves complete relevant evidence and clear file provenance. Use multiple commands whenever output size, ambiguity, truncation risk, or independent verification makes separate calls safer. Never omit relevant evidence to reduce call count, output volume, or token use. Use this for searches, multi-file inspection, tests, builds, package scripts, and long-running processes.",
       inputSchema: {
         workspaceId: z.string().describe(workspaceIdDescription),
         cmd: z.string().min(1).describe("Shell command to execute."),
@@ -957,7 +957,7 @@ export function createMcpServer(
       title: "Read file",
       description:
         [
-          "Read one directly named file in a workspace. For inspections spanning two or more related files or searches, prefer one bounded exec_command with scoped output instead of repeated read calls.",
+          "Read a directly named file in a workspace. Use as many read calls as needed for complete context. For multi-file work, combine read and exec_command according to evidence needs. Split the work whenever output size, ambiguity, truncation risk, or independent verification makes separate calls safer. Never omit relevant evidence to reduce call count, output volume, or token use.",
           "Use this tool to inspect relevant AGENTS.md or CLAUDE.md files listed by open_workspace before working in nested directories.",
           config.skillsEnabled
             ? "If available skills were returned and a task matches one, read that skill's path before proceeding. Skill paths may be outside the workspace; only advertised SKILL.md files and files under already-loaded skill directories are readable."

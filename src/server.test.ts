@@ -172,27 +172,31 @@ test("checkout reuse and context suppression survive a registry restart", async 
   }
 });
 
-test("codex mode directs related inspections through one bounded command", async (t) => {
+test("codex mode prioritizes complete inspection over call count", async (t) => {
   const context = await fixture(t, { toolMode: "codex", widgets: "off" });
 
   const instructions = context.client.getInstructions() ?? "";
-  assert.match(instructions, /Use read for one direct file read\./);
+  assert.match(instructions, /Use as many read or exec_command calls as needed/i);
   assert.match(
     instructions,
-    /two or more related files or searches, prefer one bounded exec_command/i,
+    /Never omit relevant evidence merely to reduce visible tool calls, output volume, or token use/i,
   );
 
   const tools = await context.client.listTools();
   const readTool = tools.tools.find((tool) => tool.name === "read");
   const execTool = tools.tools.find((tool) => tool.name === "exec_command");
-  assert.match(readTool?.description ?? "", /Read one directly named file/i);
+  assert.match(readTool?.description ?? "", /Use as many read calls as needed/i);
   assert.match(
     readTool?.description ?? "",
-    /two or more related files or searches, prefer one bounded exec_command/i,
+    /Split the work whenever output size, ambiguity, truncation risk, or independent verification/i,
   );
   assert.match(
     execTool?.description ?? "",
-    /two or more related files or searches, prefer one bounded command/i,
+    /Group related inspections only when this preserves complete relevant evidence and clear file provenance/i,
+  );
+  assert.match(
+    execTool?.description ?? "",
+    /Use multiple commands whenever output size, ambiguity, truncation risk, or independent verification/i,
   );
 });
 
