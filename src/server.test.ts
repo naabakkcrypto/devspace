@@ -196,6 +196,11 @@ test("codex mode prioritizes complete inspection over call count", async (t) => 
     instructions,
     /prefer the configured Codex Sol profile and its strongest configured reasoning effort/i,
   );
+  assert.match(instructions, /On Windows, exec_command runs through cmd\.exe/i);
+  assert.match(
+    instructions,
+    /Never pass PowerShell-only syntax such as 2>\$null directly to cmd\.exe/i,
+  );
 
   const tools = await context.client.listTools();
   const readTool = tools.tools.find((tool) => tool.name === "read");
@@ -213,6 +218,7 @@ test("codex mode prioritizes complete inspection over call count", async (t) => 
     execTool?.description ?? "",
     /Use multiple commands whenever output size, ambiguity, truncation risk, or independent verification/i,
   );
+  assert.match(execTool?.description ?? "", /On Windows, this runs through cmd\.exe/i);
 });
 
 interface ServerFixture {

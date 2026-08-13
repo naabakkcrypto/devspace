@@ -187,18 +187,15 @@ needed.
 
 ## Windows Shell Commands Fail
 
-DevSpace shell execution requires Bash. Native PowerShell and `cmd.exe` command
-execution are not supported yet.
+Codex-mode `exec_command` uses `cmd.exe` on Windows. A command containing
+PowerShell-only syntax can therefore behave differently; for example,
+`2>$null` creates a literal `$null` file. Invoke `powershell.exe -NoProfile
+-Command "..."` explicitly for PowerShell commands, or use native `cmd.exe`
+syntax such as `2>NUL` when appropriate.
 
-Install Git for Windows and use Git Bash, or use WSL, MSYS2, or Cygwin Bash.
-
-Run:
-
-```bash
-npx @waishnav/devspace doctor
-```
-
-Confirm Bash is detected.
+Minimal and full tool modes keep their separate shell adapter behavior. Run
+`npx @waishnav/devspace doctor` to inspect the shell dependencies available to
+that mode.
 
 ## Skills Do Not Appear
 

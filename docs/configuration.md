@@ -110,6 +110,12 @@ Codex-mode commands run without a PTY by default. Set `tty: true` on
 `node-pty` dependency; `write_stdin` can send input, poll output, and resize PTY
 sessions.
 
+Commands use the host's native shell. On Windows, `exec_command` runs through
+`cmd.exe`; invoke `powershell.exe` explicitly when a command uses PowerShell
+syntax. Do not pass PowerShell-only redirections such as `2>$null` directly to
+`cmd.exe`, because it creates a literal `$null` file instead of discarding
+output.
+
 ## Widgets
 
 `DEVSPACE_WIDGETS` controls ChatGPT Apps iframe usage.
