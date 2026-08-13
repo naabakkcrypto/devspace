@@ -336,6 +336,9 @@ function printHelp(): void {
 }
 
 async function runAgentsCommand(args: string[]): Promise<void> {
+  if (!loadConfig().subagents) {
+    throw new Error("DevSpace subagents are disabled.");
+  }
   const [subcommand, ...rest] = args;
   switch (subcommand) {
     case "ls":

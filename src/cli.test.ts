@@ -55,6 +55,24 @@ try {
     capabilityToken: "cap-other",
   });
   workspaceStore.close();
+  assert.throws(
+    () => execFileSync("node", ["--import", "tsx", "src/cli.ts", "agents", "ls"], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        DEVSPACE_CONFIG_DIR: configDir,
+        DEVSPACE_ALLOWED_ROOTS: projectRoot,
+        DEVSPACE_STATE_DIR: stateDir,
+        DEVSPACE_WORKSPACE_ID: "ws_current",
+        DEVSPACE_WORKSPACE_ROOT: projectRoot,
+        DEVSPACE_WORKSPACE_CAPABILITY: "cap-current",
+        DEVSPACE_SUBAGENTS: "0",
+        DEVSPACE_OAUTH_OWNER_TOKEN: "test-owner-token-that-is-long-enough",
+      },
+    }),
+    /DevSpace subagents are disabled/,
+  );
   const store = new LocalAgentStore(stateDir);
   const current = store.update(
     store.create({
