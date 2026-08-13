@@ -113,6 +113,22 @@ export function resolveLocalAgentTarget(
   return undefined;
 }
 
+export function resolveExistingLocalAgentProfile(
+  profileName: string,
+  provider: LocalAgentProvider,
+  profileHash: string | undefined,
+  profiles: LocalAgentProfile[],
+): LocalAgentProfile | undefined {
+  if (profileName === provider && !profileHash) return undefined;
+  const profile = profiles.find((candidate) => candidate.name === profileName);
+  if (profile && profile.provider !== provider) {
+    throw new Error(
+      `Subagent profile provider changed from ${provider} to ${profile.provider}: ${profileName}`,
+    );
+  }
+  return profile;
+}
+
 export function formatAvailableLocalAgentTargets(profiles: LocalAgentProfile[]): string {
   const profileNames = profiles.map((profile) => profile.name);
   const parts = [

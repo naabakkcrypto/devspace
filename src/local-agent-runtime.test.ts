@@ -153,7 +153,9 @@ try {
   const isolatedAuth = join(isolated.home, "auth.json");
   assert.notEqual(isolated.home, sourceCodexHome);
   assert.equal(readFileSync(isolatedAuth, "utf8"), "test-auth-only");
-  assert.equal(statSync(isolatedAuth).ino, statSync(sourceAuth).ino);
+  assert.notEqual(statSync(isolatedAuth).ino, statSync(sourceAuth).ino);
+  writeFileSync(isolatedAuth, "isolated-mutation", "utf8");
+  assert.equal(readFileSync(sourceAuth, "utf8"), "test-auth-only");
   assert.equal(isolated.env.CODEX_HOME, isolated.home);
   assert.equal(isolated.env.DEVSPACE_WORKSPACE_CAPABILITY, undefined);
   assert.equal(isolated.env.OPENAI_API_KEY, undefined);

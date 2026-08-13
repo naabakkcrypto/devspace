@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import {
   addCodexSdkWindowsHide,
   codexSdkSpawnIsHidden,
+  resolveInstalledCodexSdkPath,
 } from "./fix-codex-sdk-windows-hide.mjs";
 
 const unpatched = [
@@ -34,3 +37,20 @@ assert.equal(
   true,
   "The installed Codex SDK must hide its Windows console process.",
 );
+
+const hoistedFixture = await mkdtemp(join(tmpdir(), "devspace-hoisted-sdk-"));
+try {
+  const packageRoot = join(hoistedFixture, "node_modules", "@waishnav", "devspace");
+  const sdkRoot = join(hoistedFixture, "node_modules", "@openai", "codex-sdk");
+  await mkdir(packageRoot, { recursive: true });
+  await mkdir(join(sdkRoot, "dist"), { recursive: true });
+  await writeFile(join(packageRoot, "package.json"), '{"name":"@waishnav/devspace"}');
+  await writeFile(join(sdkRoot, "package.json"), '{"name":"@openai/codex-sdk","main":"dist/index.js"}');
+  await writeFile(join(sdkRoot, "dist", "index.js"), "export {};\n");
+  assert.equal(
+    resolveInstalledCodexSdkPath(packageRoot),
+    join(sdkRoot, "dist", "index.js"),
+  );
+} finally {
+  await rm(hoistedFixture, { recursive: true, force: true });
+}

@@ -1,4 +1,5 @@
 import { readFile, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -34,11 +35,16 @@ export function addCodexSdkWindowsHide(source) {
 }
 
 export async function patchInstalledCodexSdk(projectRoot = defaultProjectRoot) {
-  const sdkPath = resolve(projectRoot, "node_modules", "@openai", "codex-sdk", "dist", "index.js");
+  const sdkPath = resolveInstalledCodexSdkPath(projectRoot);
   const source = await readFile(sdkPath, "utf8");
   const patched = addCodexSdkWindowsHide(source);
   if (patched.changed) await writeFile(sdkPath, patched.source, "utf8");
   return { sdkPath, changed: patched.changed };
+}
+
+export function resolveInstalledCodexSdkPath(projectRoot = defaultProjectRoot) {
+  const requireFromPackage = createRequire(resolve(projectRoot, "package.json"));
+  return requireFromPackage.resolve("@openai/codex-sdk");
 }
 
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {

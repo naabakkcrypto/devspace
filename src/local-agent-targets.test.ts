@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import {
   formatAvailableLocalAgentTargets,
   parseLocalAgentRunArgs,
+  resolveExistingLocalAgentProfile,
   resolveLocalAgentTarget,
 } from "./local-agent-targets.js";
 import type { LocalAgentProfile } from "./local-agent-profiles.js";
@@ -118,5 +119,22 @@ assert.throws(
 }
 
 assert.equal(resolveLocalAgentTarget("missing", profiles), undefined);
+assert.equal(
+  resolveExistingLocalAgentProfile("claude", "opencode", "b".repeat(64), profiles)?.body,
+  "Use OpenCode.",
+);
+assert.equal(resolveExistingLocalAgentProfile("codex", "codex", undefined, profiles), undefined);
+assert.equal(
+  resolveExistingLocalAgentProfile("claude", "claude", undefined, profiles),
+  undefined,
+);
+assert.equal(
+  resolveExistingLocalAgentProfile("claude", "opencode", undefined, profiles)?.body,
+  "Use OpenCode.",
+);
+assert.throws(
+  () => resolveExistingLocalAgentProfile("claude", "codex", "b".repeat(64), profiles),
+  /provider changed from codex to opencode/,
+);
 assert.match(formatAvailableLocalAgentTargets(profiles), /profiles: reviewer, claude/);
 assert.match(formatAvailableLocalAgentTargets([]), /providers: codex, claude, opencode, pi, cursor, copilot/);

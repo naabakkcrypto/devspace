@@ -6,7 +6,7 @@ import type {
   ThreadEvent,
   ThreadOptions,
 } from "@openai/codex-sdk";
-import { existsSync, linkSync, mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { safeLocalAgentEnvironment } from "./local-agent-transport.js";
 
@@ -75,8 +75,9 @@ export interface IsolatedCodexEnvironment {
 
 /**
  * Give a managed Codex worker authentication without loading the user's
- * potentially incompatible config.toml. The auth file is hard-linked rather
- * than read or copied, and the isolated home is removed after the run.
+ * potentially incompatible config.toml. The auth file is copied so a worker
+ * cannot mutate the user's canonical credentials, and the isolated home is
+ * removed after the run.
  */
 export function createIsolatedCodexEnvironment(
   sourceEnv: NodeJS.ProcessEnv = process.env,
@@ -91,7 +92,9 @@ export function createIsolatedCodexEnvironment(
   const isolatedHome = mkdtempSync(join(homeRoot, ".devspace-agent-"));
   let disposed = false;
   try {
-    linkSync(sourceAuth, join(isolatedHome, "auth.json"));
+    const isolatedAuth = join(isolatedHome, "auth.json");
+    copyFileSync(sourceAuth, isolatedAuth);
+    chmodSync(isolatedAuth, 0o600);
   } catch (error) {
     rmSync(isolatedHome, { recursive: true, force: true });
     throw new Error(`Unable to isolate Codex authentication: ${errorMessage(error)}`);

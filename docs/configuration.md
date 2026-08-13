@@ -81,6 +81,7 @@ DevSpace uses a single-user OAuth approval flow.
 | `DEVSPACE_OAUTH_REFRESH_TOKEN_TTL_SECONDS` | `2592000` |
 | `DEVSPACE_OAUTH_SCOPES` | `devspace` |
 | `DEVSPACE_OAUTH_ALLOWED_REDIRECT_HOSTS` | `chatgpt.com,localhost,127.0.0.1` |
+| `DEVSPACE_OAUTH_RESOURCE_ALIASES` | Empty. Comma-separated legacy/public MCP resource URLs accepted during an endpoint migration. |
 
 MCP clients discover metadata from:
 

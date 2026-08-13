@@ -23,6 +23,7 @@ import { resolveLocalAgentExecutionRoot } from "./local-agent-execution-root.js"
 import {
   formatAvailableLocalAgentTargets,
   parseLocalAgentRunArgs,
+  resolveExistingLocalAgentProfile,
   resolveLocalAgentTarget,
 } from "./local-agent-targets.js";
 import {
@@ -395,16 +396,20 @@ async function runAgentsRun(args: string[]): Promise<void> {
     assertLocalAgentProviderAvailable(existing.provider);
     const profiles = await loadLocalAgentProfiles(config, workspaceRoot);
     const existingProfileName = existing.profileName;
-    const profile = existing.profileName === existing.provider
-      ? undefined
-      : profiles.find((candidate) => candidate.name === existingProfileName);
-    if (existing.profileName !== existing.provider) {
-      if (!profile) throw new Error(`Subagent profile not found: ${existing.profileName}`);
+    const profile = resolveExistingLocalAgentProfile(
+      existingProfileName,
+      existing.provider,
+      existing.profileHash,
+      profiles,
+    );
+    if (profile) {
       if (!existing.profileHash) {
         existing = store.adoptLegacyProfileHash(existing.id, scope, profile.profileHash);
       } else if (profile.profileHash !== existing.profileHash) {
         throw new Error(`Subagent profile changed since session creation: ${existing.profileName}`);
       }
+    } else if (existing.profileName !== existing.provider) {
+      throw new Error(`Subagent profile not found: ${existing.profileName}`);
     }
     const fullPrompt = profile ? composeLocalAgentPrompt(profile, parsed.prompt) : parsed.prompt;
     const runId = randomUUID();
