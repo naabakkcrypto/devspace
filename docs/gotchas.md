@@ -237,9 +237,12 @@ and provider errors are bounded and marked when truncated.
 Active runs emit a database heartbeat. A stale `starting` run can be claimed
 again after 90 seconds; a stale `running` read-only run can also be reclaimed
 because an older worker cannot write and its later database update is fenced by
-`run_id`. A stale running writer remains locked deliberately: inspect or
-discard its isolated managed worktree and confirm the old process has stopped
-before opening a replacement worktree. This fail-closed behavior prevents two
+`run_id`. Use `devspace agents stop <id>` for cooperative cancellation. For an
+interrupted writer, `devspace agents recover <id>` refuses a fresh heartbeat or
+a live recorded PID. After 90 seconds of staleness, it releases only a
+pre-provider lease; a provider-started run becomes `quarantined` and keeps the
+writer lock. The managed worktree is
+always preserved for inspection. This fail-closed behavior prevents two
 writers from sharing one worktree after an unprovable crash.
 
 Provider/model/thinking/write-mode values in the catalog are requested

@@ -24,6 +24,8 @@ devspace agents ls
 devspace agents run <profile-or-provider-or-id> "<prompt>"
 devspace agents wait <id> [<id> ...]
 devspace agents show <id>
+devspace agents stop <id>
+devspace agents recover <id>
 ```
 
 `ls` shows existing subagent sessions for the current workspace. DevSpace scopes
@@ -55,11 +57,15 @@ responses.
 call it once per id after `wait` completes instead of repeatedly polling every
 session with `show`.
 
-Read-only runs heartbeat while active. A read-only run left stale by a crash is
-reclaimable after 90 seconds; database fencing prevents its old worker from
-overwriting the new result. A running writer fails closed instead of being
-auto-reclaimed. Keep its managed worktree isolated until the old process is
-confirmed stopped, then use a fresh worktree.
+Runs heartbeat while active. `stop <id>` requests cooperative cancellation;
+the worker aborts its provider turn and preserves the managed worktree.
+`recover <id>` is reserved for an interrupted writable run. It refuses a fresh
+heartbeat or a live recorded PID. After 90 seconds of staleness, it releases
+the writer lease only when the provider never started; otherwise it marks the
+run `quarantined` and keeps the lease because a dead worker PID does not prove
+its child process tree is dead. Database `run_id` fencing prevents an old
+worker from overwriting the recovered state. Never kill a PID or delete the
+worktree merely to make recovery pass.
 
 Do not run provider CLIs such as `codex`, `claude`, `opencode`, `pi`,
 `cursor-agent`, or `copilot` directly unless you are explicitly debugging
@@ -124,7 +130,8 @@ Use a parent-owned barrier between waves:
 
 Never run two writers in one workspace. Give each writable lane its own managed
 worktree, then integrate one reviewed candidate. A textual ownership statement
-does not replace worktree isolation.
+does not replace worktree isolation. The parent owns commit, merge, push, and
+worktree cleanup; a writer only edits and tests its assigned worktree.
 
 ## Worker prompts
 

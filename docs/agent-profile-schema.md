@@ -134,6 +134,12 @@ remain useful catalog templates, but the CLI fails closed until an adapter has
 executable sandbox evidence. An `allowed` Codex profile is accepted only in a
 managed DevSpace worktree; requested model, thinking, and write mode remain
 unverified runtime metadata unless a provider supplies native evidence.
+Writable runs support cooperative `agents stop` and fail-closed `agents
+recover`: recovery requires a heartbeat older than 90 seconds and a recorded
+worker PID that is no longer alive. It releases the lease only when the
+provider never started; otherwise it records `quarantined` and retains the
+lease. Recovery never deletes the managed worktree. Commit, merge, push, and
+cleanup remain parent-owned operations.
 
 ### `disabled`
 

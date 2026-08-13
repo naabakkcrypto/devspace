@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ThreadEvent, ThreadOptions } from "@openai/codex-sdk";
+import type { ThreadEvent, ThreadOptions, TurnOptions } from "@openai/codex-sdk";
 import {
   CodexSdkLocalAgentRuntime,
   createIsolatedCodexEnvironment,
@@ -14,12 +14,14 @@ import {
 
 class FakeThread {
   prompts: string[] = [];
+  turnOptions: Array<TurnOptions | undefined> = [];
   responseForPrompt = (prompt: string) => `response:${prompt}`;
 
   constructor(readonly id: string | null) {}
 
-  async runStreamed(prompt: string): Promise<{ events: AsyncGenerator<ThreadEvent> }> {
+  async runStreamed(prompt: string, options?: TurnOptions): Promise<{ events: AsyncGenerator<ThreadEvent> }> {
     this.prompts.push(prompt);
+    this.turnOptions.push(options);
     const response = this.responseForPrompt(prompt);
     return {
       events: (async function* (): AsyncGenerator<ThreadEvent> {
@@ -90,6 +92,14 @@ assert.deepEqual(codex.started[1], {
   model: "gpt-5.4",
   modelReasoningEffort: "high",
 });
+
+const stopController = new AbortController();
+await runtime.run({
+  prompt: "cooperative stop",
+  workspace: "/tmp/project",
+  signal: stopController.signal,
+});
+assert.equal(codex.startThreadInstance.turnOptions.at(-1)?.signal, stopController.signal);
 
 const resumed = await runtime.run({
   prompt: "continue",

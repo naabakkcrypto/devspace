@@ -160,7 +160,8 @@ agent without reading provider-specific launch details. `devspace agents ls`
 lists existing subagent sessions for the current workspace, scoped by the
 workspace environment injected into shell commands. The `subagent-delegation`
 skill teaches the model to use only the minimal `devspace agents ls`,
-`devspace agents run`, `devspace agents wait`, and `devspace agents show`
+`devspace agents run`, `devspace agents wait`, `devspace agents show`,
+`devspace agents stop`, and `devspace agents recover`
 workflow. `wait` is a multi-session barrier; it emits status transitions and
 returns only after every requested session is terminal.
 

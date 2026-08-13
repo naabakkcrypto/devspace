@@ -6,7 +6,7 @@ import type { ServerConfig } from "./config.js";
 import type { LocalAgentWriteMode } from "./local-agent-profiles.js";
 import type { WorkspaceMode } from "./workspace-store.js";
 
-export type LocalAgentStatus = "starting" | "running" | "idle" | "error" | "stopped";
+export type LocalAgentStatus = "starting" | "running" | "idle" | "error" | "stopped" | "quarantined";
 
 export const MAX_LOCAL_AGENT_RESPONSE_CHARACTERS = 64 * 1024;
 export const MAX_LOCAL_AGENT_ERROR_CHARACTERS = 16 * 1024;
@@ -44,6 +44,9 @@ export interface LocalAgentRecord {
   thinking?: string;
   writeMode: LocalAgentWriteMode;
   runId?: string;
+  workerPid?: number;
+  stopRequested: boolean;
+  providerStarted: boolean;
   providerSessionId?: string;
   status: LocalAgentStatus;
   latestResponse?: string;
@@ -96,6 +99,9 @@ interface LocalAgentRow {
   thinking: string | null;
   write_mode: string;
   run_id: string | null;
+  worker_pid: number | null;
+  stop_requested: string;
+  provider_started: string;
   provider_session_id: string | null;
   status: string;
   latest_response: string | null;
@@ -185,6 +191,8 @@ export class LocalAgentStore {
       thinking: input.thinking,
       writeMode: input.writeMode ?? "read_only",
       runId: input.runId,
+      stopRequested: false,
+      providerStarted: false,
       status: "starting",
       responseTruncated: false,
       createdAt: now,
@@ -195,9 +203,10 @@ export class LocalAgentStore {
       .prepare(
         `insert into local_agent_sessions (
           id, workspace_id, workspace_root, workspace_mode, profile_name, profile_hash,
-          provider, model, thinking, write_mode, run_id, status,
+          provider, model, thinking, write_mode, run_id, worker_pid, stop_requested,
+          provider_started, status,
           response_truncated, created_at, updated_at
-        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         record.id,
@@ -211,6 +220,9 @@ export class LocalAgentStore {
         record.thinking ?? null,
         record.writeMode,
         record.runId ?? null,
+        null,
+        "false",
+        "false",
         record.status,
         "false",
         record.createdAt,
@@ -260,7 +272,9 @@ export class LocalAgentStore {
       (current.status === "idle" || current.status === "error" || current.status === "stopped")
     ) {
       const repair = this.database.sqlite.prepare(
-        `update local_agent_sessions set run_id = null, updated_at = ?
+        `update local_agent_sessions
+            set run_id = null, worker_pid = null, stop_requested = 'false',
+                provider_started = 'false', updated_at = ?
           where id = ? and workspace_id = ? and run_id = ?
             and status in ('idle', 'error', 'stopped')
             and exists (
@@ -285,6 +299,8 @@ export class LocalAgentStore {
       const result = this.database.sqlite.prepare(
         `update local_agent_sessions
             set status = 'starting', run_id = ?, model = ?, thinking = ?,
+                worker_pid = null, stop_requested = 'false',
+                provider_started = 'false',
                 latest_response = null, response_truncated = 'false', error = null,
                 runtime_identity_json = null, updated_at = ?
           where id = ? and workspace_id = ?
@@ -317,7 +333,15 @@ export class LocalAgentStore {
     return this.getScoped(current.id, verified)!;
   }
 
-  claimWorker(id: string, scope: LocalAgentWorkspaceScope, runId: string): LocalAgentRecord {
+  claimWorker(
+    id: string,
+    scope: LocalAgentWorkspaceScope,
+    runId: string,
+    workerPid: number,
+  ): LocalAgentRecord {
+    if (!Number.isInteger(workerPid) || workerPid <= 0) {
+      throw new Error("A valid worker PID is required.");
+    }
     const verified = this.verifyWorkspaceScope(scope);
     const current = this.getScoped(id, verified);
     if (!current || current.runId !== runId) {
@@ -326,7 +350,7 @@ export class LocalAgentStore {
     assertWriteModeAllowedForWorkspace(current.writeMode, verified);
     const result = this.database.sqlite.prepare(
       `update local_agent_sessions
-          set status = 'running', error = null, updated_at = ?
+          set status = 'running', worker_pid = ?, error = null, updated_at = ?
         where id = ? and workspace_id = ?
           and run_id = ? and status = 'starting'
           and exists (
@@ -334,6 +358,7 @@ export class LocalAgentStore {
              where w.id = ? and w.capability_token = ? and w.status = 'active'
           )`,
     ).run(
+      workerPid,
       new Date().toISOString(),
       id,
       verified.workspaceId,
@@ -345,7 +370,7 @@ export class LocalAgentStore {
     return this.getScoped(id, verified)!;
   }
 
-  heartbeatOwned(id: string, scope: LocalAgentWorkspaceScope, runId: string): void {
+  heartbeatOwned(id: string, scope: LocalAgentWorkspaceScope, runId: string): boolean {
     const verified = this.verifyWorkspaceScope(scope);
     const result = this.database.sqlite.prepare(
       `update local_agent_sessions set updated_at = ?
@@ -363,6 +388,108 @@ export class LocalAgentStore {
       verified.workspaceCapability,
     );
     if (result.changes !== 1) throw new Error(`Subagent ${id} heartbeat was rejected.`);
+    return this.getScoped(id, verified)!.stopRequested;
+  }
+
+  requestStop(id: string, scope: LocalAgentWorkspaceScope): LocalAgentRecord {
+    const verified = this.verifyWorkspaceScope(scope);
+    const current = this.getScoped(id, verified);
+    if (!current) throw new Error(`Unknown subagent id for this workspace: ${id}`);
+    if (!current.runId || (current.status !== "starting" && current.status !== "running")) {
+      throw new Error(`Subagent ${current.id} is not currently running.`);
+    }
+    const result = this.database.sqlite.prepare(
+      `update local_agent_sessions set stop_requested = 'true'
+        where id = ? and workspace_id = ? and run_id = ? and status in ('starting', 'running')
+          and exists (
+            select 1 from workspace_sessions w
+             where w.id = ? and w.capability_token = ? and w.status = 'active'
+          )`,
+    ).run(
+      current.id,
+      verified.workspaceId,
+      current.runId,
+      verified.workspaceId,
+      verified.workspaceCapability,
+    );
+    if (result.changes !== 1) throw new Error(`Subagent ${current.id} stop request was rejected.`);
+    return this.getScoped(current.id, verified)!;
+  }
+
+  markProviderStarted(id: string, scope: LocalAgentWorkspaceScope, runId: string): LocalAgentRecord {
+    const verified = this.verifyWorkspaceScope(scope);
+    const result = this.database.sqlite.prepare(
+      `update local_agent_sessions set provider_started = 'true', updated_at = ?
+        where id = ? and workspace_id = ? and run_id = ? and status = 'running'
+          and stop_requested = 'false' and provider_started = 'false'
+          and exists (
+            select 1 from workspace_sessions w
+             where w.id = ? and w.capability_token = ? and w.status = 'active'
+          )`,
+    ).run(
+      new Date().toISOString(),
+      id,
+      verified.workspaceId,
+      runId,
+      verified.workspaceId,
+      verified.workspaceCapability,
+    );
+    if (result.changes !== 1) throw new Error(`Subagent ${id} provider start was rejected.`);
+    return this.getScoped(id, verified)!;
+  }
+
+  recoverInterruptedWriter(
+    id: string,
+    scope: LocalAgentWorkspaceScope,
+    isWorkerAlive: (pid: number) => boolean,
+  ): LocalAgentRecord {
+    const verified = this.verifyWorkspaceScope(scope);
+    const current = this.getScoped(id, verified);
+    if (!current) throw new Error(`Unknown subagent id for this workspace: ${id}`);
+    if (current.writeMode !== "allowed") {
+      throw new Error(`Subagent ${current.id} is not a writable run.`);
+    }
+    assertWriteModeAllowedForWorkspace(current.writeMode, verified);
+    if (!current.runId || (current.status !== "starting" && current.status !== "running")) {
+      throw new Error(`Subagent ${current.id} is not an interrupted active writer.`);
+    }
+    const staleBefore = new Date(Date.now() - LOCAL_AGENT_STALE_RUN_MS).toISOString();
+    if (current.updatedAt >= staleBefore) {
+      throw new Error(`Subagent ${current.id} heartbeat is not stale enough to recover.`);
+    }
+    if (current.workerPid && isWorkerAlive(current.workerPid)) {
+      throw new Error(`Subagent ${current.id} worker process ${current.workerPid} is still alive.`);
+    }
+    if (current.providerStarted) {
+      return this.updateOwned(current.id, verified, current.runId, {
+        status: "quarantined",
+        error: "Worker died after provider start; managed worktree and writer lease quarantined.",
+      });
+    }
+
+    const recoveryError = "Recovered interrupted writer; managed worktree preserved for review.";
+    const result = this.database.sqlite.prepare(
+      `update local_agent_sessions
+          set status = 'stopped', run_id = null, worker_pid = null,
+              stop_requested = 'false', provider_started = 'false', error = ?, updated_at = ?
+        where id = ? and workspace_id = ? and run_id = ?
+          and status in ('starting', 'running') and provider_started = 'false' and updated_at < ?
+          and exists (
+            select 1 from workspace_sessions w
+             where w.id = ? and w.capability_token = ? and w.status = 'active'
+          )`,
+    ).run(
+      recoveryError,
+      new Date().toISOString(),
+      current.id,
+      verified.workspaceId,
+      current.runId,
+      staleBefore,
+      verified.workspaceId,
+      verified.workspaceCapability,
+    );
+    if (result.changes !== 1) throw new Error(`Subagent ${current.id} recovery was rejected.`);
+    return this.getScoped(current.id, verified)!;
   }
 
   adoptLegacyProfileHash(
@@ -411,13 +538,15 @@ export class LocalAgentStore {
     }
     const boundedResponse = boundText(patch.latestResponse, MAX_LOCAL_AGENT_RESPONSE_CHARACTERS);
     const boundedError = boundText(patch.error, MAX_LOCAL_AGENT_ERROR_CHARACTERS);
-    const terminal = patch.status === "idle" || patch.status === "error" || patch.status === "stopped";
+    const terminal = patch.status === "idle" || patch.status === "error"
+      || patch.status === "stopped" || patch.status === "quarantined";
     const responseTruncated = (patch.responseTruncated ?? current.responseTruncated) || boundedResponse.truncated;
     const updatedAt = new Date().toISOString();
     const result = this.database.sqlite.prepare(
       `update local_agent_sessions set
           provider_session_id = ?, status = ?, latest_response = ?, response_truncated = ?,
-          runtime_identity_json = ?, error = ?, run_id = ?, updated_at = ?
+          runtime_identity_json = ?, error = ?, run_id = ?, worker_pid = ?,
+          stop_requested = ?, provider_started = ?, updated_at = ?
         where id = ? and workspace_id = ? and run_id = ?
           and exists (
             select 1 from workspace_sessions w
@@ -433,6 +562,11 @@ export class LocalAgentStore {
         : serializeRuntimeIdentity(patch.runtimeIdentity),
       patch.error === undefined ? current.error ?? null : boundedError.text ?? null,
       terminal ? null : runId,
+      terminal ? null : current.workerPid ?? null,
+      terminal ? "false" : String(current.stopRequested),
+      patch.status === "quarantined"
+        ? String(current.providerStarted)
+        : terminal ? "false" : String(current.providerStarted),
       updatedAt,
       id,
       verified.workspaceId,
@@ -524,7 +658,8 @@ export class LocalAgentStore {
     this.database.sqlite.prepare(
       `update local_agent_sessions set
         workspace_id = ?, workspace_root = ?, workspace_mode = ?, profile_name = ?, profile_hash = ?,
-        provider = ?, model = ?, thinking = ?, write_mode = ?, run_id = ?, provider_session_id = ?,
+        provider = ?, model = ?, thinking = ?, write_mode = ?, run_id = ?, worker_pid = ?,
+        stop_requested = ?, provider_started = ?, provider_session_id = ?,
         status = ?, latest_response = ?, response_truncated = ?, runtime_identity_json = ?, error = ?, updated_at = ?
        where id = ?`,
     ).run(
@@ -538,6 +673,9 @@ export class LocalAgentStore {
       record.thinking ?? null,
       record.writeMode,
       record.runId ?? null,
+      record.workerPid ?? null,
+      String(record.stopRequested),
+      String(record.providerStarted),
       record.providerSessionId ?? null,
       record.status,
       record.latestResponse ?? null,
@@ -569,6 +707,9 @@ function rowToLocalAgentRecord(row: LocalAgentRow): LocalAgentRecord {
     thinking: row.thinking ?? undefined,
     writeMode: row.write_mode === "allowed" ? "allowed" : "read_only",
     runId: row.run_id ?? undefined,
+    workerPid: row.worker_pid ?? undefined,
+    stopRequested: row.stop_requested === "true",
+    providerStarted: row.provider_started === "true",
     providerSessionId: row.provider_session_id ?? undefined,
     status: readStatus(row.status),
     latestResponse: response.text,
@@ -581,7 +722,8 @@ function rowToLocalAgentRecord(row: LocalAgentRow): LocalAgentRecord {
 }
 
 function readStatus(status: string): LocalAgentStatus {
-  return status === "starting" || status === "running" || status === "idle" || status === "error" || status === "stopped"
+  return status === "starting" || status === "running" || status === "idle" || status === "error"
+    || status === "stopped" || status === "quarantined"
     ? status
     : "error";
 }

@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
-import { resolveShellCommand, terminateProcessTree } from "./process-platform.js";
+import { isProcessAlive, resolveShellCommand, terminateProcessTree } from "./process-platform.js";
+
+assert.equal(isProcessAlive(process.pid), true);
+assert.equal(isProcessAlive(-1), false);
+assert.equal(isProcessAlive(Number.NaN), false);
 
 assert.deepEqual(resolveShellCommand("echo ok", "win32", { ComSpec: "C:\\Windows\\cmd.exe" }), {
   executable: "C:\\Windows\\cmd.exe",

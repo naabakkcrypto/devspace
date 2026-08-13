@@ -143,8 +143,9 @@ Skill paths may be outside the workspace. DevSpace only permits reading:
 Set `DEVSPACE_SKILLS=0` to hide skills from workspace output. Set
 `DEVSPACE_SUBAGENTS=1` to expose the experimental subagent catalog and
 `subagent-delegation` skill. That skill teaches the minimal
-`devspace agents ls`, `devspace agents run`, `devspace agents wait`, and
-`devspace agents show` workflow. The catalog comes from `open_workspace`;
+`devspace agents ls`, `devspace agents run`, `devspace agents wait`,
+`devspace agents show`, `devspace agents stop`, and `devspace agents recover`
+workflow. The catalog comes from `open_workspace`;
 `devspace agents ls` lists existing subagent sessions for that workspace.
 
 The host may launch all ready independent read-only lanes in one wave, then
@@ -154,6 +155,14 @@ is no fixed call or token cap. Writable profiles require separate managed
 worktrees. Managed execution is currently Codex-only; other providers remain
 uncertified catalog candidates. Requested model/thinking/mode metadata must not
 be described as observed runtime identity.
+
+`stop` is cooperative and preserves the worktree. `recover` never kills a
+process: after a 90-second stale heartbeat and a dead recorded PID, it releases
+a pre-provider writer or marks a provider-started run as `quarantined` while
+retaining its lease. A live writer is refused. Native Codex
+collaboration policies and
+DevSpace local-agent profile policies are separate domains; a Luna-only native
+child rule must not suppress a configured DevSpace Codex Sol profile.
 
 ## Tool Names
 

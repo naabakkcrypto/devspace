@@ -48,7 +48,7 @@ import {
   writeDevspaceConfig,
   type DevspaceUserConfig,
 } from "./user-config.js";
-import { terminateProcessTree } from "./process-platform.js";
+import { isProcessAlive, terminateProcessTree } from "./process-platform.js";
 import { expandHomePath } from "./roots.js";
 import { shutdownHttpServer } from "./server-shutdown.js";
 
@@ -325,6 +325,8 @@ function printHelp(): void {
       "  devspace agents run <profile-or-provider-or-id> [--model <model>] <prompt>",
       "  devspace agents wait <id> [<id> ...]",
       "  devspace agents show <id>",
+      "  devspace agents stop <id>",
+      "  devspace agents recover <id>",
       "  devspace -v, --version   Print the installed version",
       "",
       "For temporary tunnels:",
@@ -348,6 +350,12 @@ async function runAgentsCommand(args: string[]): Promise<void> {
       return;
     case "wait":
       await runAgentsWait(rest);
+      return;
+    case "stop":
+      await runAgentsStop(rest);
+      return;
+    case "recover":
+      await runAgentsRecover(rest);
       return;
     case "__worker":
       await runAgentsWorker(rest);
@@ -514,6 +522,39 @@ async function runAgentsShow(args: string[]): Promise<void> {
   }
 }
 
+async function runAgentsStop(args: string[]): Promise<void> {
+  const [id] = args;
+  if (!id || args.length !== 1) throw new Error("Usage: devspace agents stop <id>");
+  const config = loadConfig();
+  const store = createLocalAgentStore(config);
+  try {
+    const record = store.requestStop(id, resolveCurrentWorkspaceScope());
+    console.log(`${formatAgentLine(record)} stop_requested=true`);
+  } finally {
+    store.close();
+  }
+}
+
+async function runAgentsRecover(args: string[]): Promise<void> {
+  const [id] = args;
+  if (!id || args.length !== 1) throw new Error("Usage: devspace agents recover <id>");
+  const config = loadConfig();
+  const store = createLocalAgentStore(config);
+  try {
+    const record = store.recoverInterruptedWriter(
+      id,
+      resolveCurrentWorkspaceScope(),
+      isProcessAlive,
+    );
+    console.log(formatAgentLine(record));
+    console.log(record.status === "quarantined"
+      ? "Provider lineage is ambiguous; managed worktree and writer lease remain quarantined."
+      : "Pre-provider writer recovered; managed worktree preserved for review.");
+  } finally {
+    store.close();
+  }
+}
+
 async function runAgentsWorker(args: string[]): Promise<void> {
   const [id, runId] = args;
   if (!id || !runId || args.length !== 2) {
@@ -526,15 +567,18 @@ async function runAgentsWorker(args: string[]): Promise<void> {
   const store = new LocalAgentStore(stateDir);
   let record: LocalAgentRecord | undefined;
   let heartbeat: NodeJS.Timeout | undefined;
+  let providerStarted = false;
   try {
-    record = store.claimWorker(id, scope, runId);
+    record = store.claimWorker(id, scope, runId, process.pid);
     if (!isLocalAgentProvider(record.provider)) {
       throw new Error(`Unknown subagent provider: ${record.provider}`);
     }
     assertManagedLocalAgentRun(record.provider);
+    const abortController = new AbortController();
+    if (record.stopRequested) abortController.abort();
     heartbeat = setInterval(() => {
       try {
-        store.heartbeatOwned(id, scope, runId);
+        if (store.heartbeatOwned(id, scope, runId)) abortController.abort();
       } catch {
         if (heartbeat) clearInterval(heartbeat);
         heartbeat = undefined;
@@ -543,7 +587,19 @@ async function runAgentsWorker(args: string[]): Promise<void> {
     heartbeat.unref();
     const envelope = await readLocalAgentPromptEnvelope(process.stdin, { agentId: id, runId });
     await sendWorkerAcknowledgement(id, runId);
+    if (record.stopRequested || store.heartbeatOwned(id, scope, runId)) {
+      store.updateOwned(record.id, scope, runId, {
+        status: "stopped",
+        error: "Stop requested before provider start; managed worktree preserved for review.",
+      });
+      return;
+    }
     const executionRoot = resolveLocalAgentExecutionRoot(record.workspaceRoot, process.cwd());
+    record = store.markProviderStarted(id, scope, runId);
+    providerStarted = true;
+    if (!isLocalAgentProvider(record.provider)) {
+      throw new Error(`Unknown subagent provider: ${record.provider}`);
+    }
     const result = await runManagedLocalAgentProvider(record.provider, {
       prompt: envelope.prompt,
       workspace: executionRoot,
@@ -551,21 +607,29 @@ async function runAgentsWorker(args: string[]): Promise<void> {
       writeMode: record.writeMode,
       model: record.model,
       thinking: record.thinking,
+      signal: abortController.signal,
     });
+    const stopped = store.heartbeatOwned(id, scope, runId);
     store.updateOwned(record.id, scope, runId, {
       providerSessionId: result.providerSessionId ?? undefined,
-      status: "idle",
+      status: stopped ? "stopped" : "idle",
       latestResponse: result.finalResponse,
       responseTruncated: result.responseTruncated,
       runtimeIdentity: result.runtimeIdentity,
-      error: undefined,
+      error: stopped ? "Stop requested; managed worktree preserved for review." : undefined,
     });
   } catch (error) {
     if (record) {
       try {
+        const stopped = store.getScoped(record.id, scope)?.stopRequested === true;
+        const quarantined = record.writeMode === "allowed" && providerStarted;
         store.updateOwned(record.id, scope, runId, {
-          status: "error",
-          error: errorMessage(error),
+          status: quarantined ? "quarantined" : stopped ? "stopped" : "error",
+          error: quarantined
+            ? `Writable provider ended unexpectedly; managed worktree quarantined. ${errorMessage(error)}`
+            : stopped
+              ? "Stop requested; managed worktree preserved for review."
+              : errorMessage(error),
         });
       } catch {
         // A stale worker cannot overwrite the current run.
@@ -607,9 +671,10 @@ async function runAgentsWait(args: string[]): Promise<void> {
     const idle = records.filter((record) => record.status === "idle").length;
     const error = records.filter((record) => record.status === "error").length;
     const stopped = records.filter((record) => record.status === "stopped").length;
+    const quarantined = records.filter((record) => record.status === "quarantined").length;
     console.log(
       `Barrier complete: ${records.length}/${records.length} terminal `
-      + `(idle=${idle}, error=${error}, stopped=${stopped}).`,
+      + `(idle=${idle}, error=${error}, stopped=${stopped}, quarantined=${quarantined}).`,
     );
   } finally {
     store.close();
@@ -681,7 +746,7 @@ function formatAgentLine(agent: Pick<
 }
 
 function isTerminalLocalAgentStatus(status: LocalAgentRecord["status"]): boolean {
-  return status === "idle" || status === "error" || status === "stopped";
+  return status === "idle" || status === "error" || status === "stopped" || status === "quarantined";
 }
 
 async function deliverAgentPrompt(
@@ -773,6 +838,8 @@ function printAgentsHelp(): void {
       "  devspace agents run <profile-or-provider-or-id> [--model <model>] [--thinking <level>] <prompt>",
       "  devspace agents wait <id> [<id> ...]",
       "  devspace agents show <id>",
+      "  devspace agents stop <id>",
+      "  devspace agents recover <id>",
     ].join("\n"),
   );
 }

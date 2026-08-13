@@ -32,6 +32,11 @@ const migrations: Migration[] = [
     name: "local-agent-safety",
     up: migrateLocalAgentSafety,
   },
+  {
+    version: 6,
+    name: "local-agent-writer-recovery",
+    up: migrateLocalAgentWriterRecovery,
+  },
 ];
 
 export function migrateDatabase(sqlite: Database.Database): void {
@@ -258,6 +263,41 @@ function migrateLocalAgentSafety(sqlite: Database.Database): void {
     create unique index if not exists local_agent_sessions_active_writer_root_uidx
       on local_agent_sessions(${writerRootExpression})
       where write_mode = 'allowed' and status in ('starting', 'running');
+  `);
+}
+
+function migrateLocalAgentWriterRecovery(sqlite: Database.Database): void {
+  addColumnIfMissing(sqlite, "local_agent_sessions", "worker_pid", "integer");
+  addColumnIfMissing(
+    sqlite,
+    "local_agent_sessions",
+    "stop_requested",
+    "text not null default 'false'",
+  );
+  addColumnIfMissing(
+    sqlite,
+    "local_agent_sessions",
+    "provider_started",
+    "text not null default 'false'",
+  );
+  sqlite.exec(`
+    update local_agent_sessions
+       set stop_requested = 'false'
+     where stop_requested is null or stop_requested not in ('true', 'false');
+
+    update local_agent_sessions
+       set provider_started = 'false'
+     where provider_started is null or provider_started not in ('true', 'false');
+  `);
+
+  const writerRootExpression = process.platform === "win32"
+    ? "lower(workspace_root)"
+    : "workspace_root";
+  sqlite.exec(`
+    drop index if exists local_agent_sessions_active_writer_root_uidx;
+    create unique index local_agent_sessions_active_writer_root_uidx
+      on local_agent_sessions(${writerRootExpression})
+      where write_mode = 'allowed' and status in ('starting', 'running', 'quarantined');
   `);
 }
 

@@ -1,6 +1,6 @@
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
-import { createRequire } from "node:module";
-import { dirname, resolve } from "node:path";
+import { dirname, join, parse, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const scriptRoot = dirname(fileURLToPath(import.meta.url));
@@ -43,8 +43,30 @@ export async function patchInstalledCodexSdk(projectRoot = defaultProjectRoot) {
 }
 
 export function resolveInstalledCodexSdkPath(projectRoot = defaultProjectRoot) {
-  const requireFromPackage = createRequire(resolve(projectRoot, "package.json"));
-  return requireFromPackage.resolve("@openai/codex-sdk");
+  let current = resolve(projectRoot);
+  const filesystemRoot = parse(current).root;
+  while (true) {
+    const packageRoot = join(current, "node_modules", "@openai", "codex-sdk");
+    const manifestPath = join(packageRoot, "package.json");
+    if (existsSync(manifestPath) && statSync(manifestPath).isFile()) {
+      const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+      const rootExport = manifest.exports?.["."];
+      const entry = typeof rootExport === "string"
+        ? rootExport
+        : rootExport?.import ?? rootExport?.default ?? manifest.module ?? manifest.main;
+      if (typeof entry !== "string" || !entry.startsWith("./")) {
+        throw new Error(`Unable to resolve the Codex SDK import entry from ${manifestPath}.`);
+      }
+      const sdkPath = resolve(packageRoot, entry);
+      if (!existsSync(sdkPath) || !statSync(sdkPath).isFile()) {
+        throw new Error(`Resolved Codex SDK entry is missing: ${sdkPath}`);
+      }
+      return sdkPath;
+    }
+    if (current === filesystemRoot) break;
+    current = dirname(current);
+  }
+  throw new Error(`Unable to locate @openai/codex-sdk from ${projectRoot}.`);
 }
 
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {

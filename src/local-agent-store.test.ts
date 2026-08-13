@@ -119,7 +119,8 @@ try {
     () => otherStore.claimRun(created.id, secureScope, "run-two"),
     /already claimed|no longer resumable/,
   );
-  store.claimWorker(created.id, secureScope, claimedId);
+  store.claimWorker(created.id, secureScope, claimedId, 10_001);
+  assert.equal(store.getScoped(created.id, secureScope)?.workerPid, 10_001);
   const huge = "x".repeat(MAX_LOCAL_AGENT_RESPONSE_CHARACTERS * 2);
   const completed = store.updateOwned(created.id, secureScope, claimedId, {
     status: "idle",
@@ -167,7 +168,7 @@ try {
     "post-rollback-run",
   );
   assert.equal(rollbackReclaimed.runId, "post-rollback-run");
-  store.claimWorker(rollbackCompatible.id, secureScope, "post-rollback-run");
+  store.claimWorker(rollbackCompatible.id, secureScope, "post-rollback-run", 10_002);
   store.updateOwned(rollbackCompatible.id, secureScope, "post-rollback-run", { status: "idle" });
 
   const staleReader = store.createScoped(secureScope, {
@@ -176,8 +177,8 @@ try {
     writeMode: "read_only",
     runId: "stale-reader-one",
   });
-  store.claimWorker(staleReader.id, secureScope, "stale-reader-one");
-  store.heartbeatOwned(staleReader.id, secureScope, "stale-reader-one");
+  store.claimWorker(staleReader.id, secureScope, "stale-reader-one", 10_003);
+  assert.equal(store.heartbeatOwned(staleReader.id, secureScope, "stale-reader-one"), false);
   assert.throws(
     () => otherStore.claimRun(staleReader.id, secureScope, "stale-reader-fresh"),
     /already claimed|no longer resumable/,
@@ -190,7 +191,7 @@ try {
   staleSqlite.close();
   const reclaimedReader = otherStore.claimRun(staleReader.id, secureScope, "stale-reader-two");
   assert.equal(reclaimedReader.runId, "stale-reader-two");
-  otherStore.claimWorker(staleReader.id, secureScope, "stale-reader-two");
+  otherStore.claimWorker(staleReader.id, secureScope, "stale-reader-two", 10_004);
   otherStore.updateOwned(staleReader.id, secureScope, "stale-reader-two", { status: "idle" });
 
   const legacyUnsafeWriter = store.create({
@@ -203,7 +204,7 @@ try {
     runId: "legacy-unsafe-writer",
   });
   assert.throws(
-    () => store.claimWorker(legacyUnsafeWriter.id, secureScope, "legacy-unsafe-writer"),
+    () => store.claimWorker(legacyUnsafeWriter.id, secureScope, "legacy-unsafe-writer", 10_006),
     /managed DevSpace worktree/,
   );
   store.update(legacyUnsafeWriter.id, { status: "error", runId: undefined });
@@ -248,7 +249,16 @@ try {
     }),
     /UNIQUE constraint failed/,
   );
-  store.claimWorker(writerOne.id, worktreeScope, "writer-reclaimed-before-start");
+  store.claimWorker(writerOne.id, worktreeScope, "writer-reclaimed-before-start", 10_005);
+  assert.equal(store.getScoped(writerOne.id, worktreeScope)?.workerPid, 10_005);
+  store.markProviderStarted(writerOne.id, worktreeScope, "writer-reclaimed-before-start");
+  assert.equal(store.getScoped(writerOne.id, worktreeScope)?.providerStarted, true);
+  const stopRequested = store.requestStop(writerOne.id, worktreeScope);
+  assert.equal(stopRequested.stopRequested, true);
+  assert.equal(
+    store.heartbeatOwned(writerOne.id, worktreeScope, "writer-reclaimed-before-start"),
+    true,
+  );
   const runningWriterSqlite = new Database(databasePath(root));
   runningWriterSqlite.prepare("update local_agent_sessions set updated_at = ? where id = ?").run(
     new Date(Date.now() - LOCAL_AGENT_STALE_RUN_MS - 1_000).toISOString(),
@@ -256,10 +266,61 @@ try {
   );
   runningWriterSqlite.close();
   assert.throws(
+    () => store.recoverInterruptedWriter(writerOne.id, worktreeScope, () => true),
+    /still alive/,
+  );
+  assert.throws(
     () => store.claimRun(writerOne.id, worktreeScope, "unsafe-writer-reclaim"),
     /already claimed|no longer resumable/,
   );
-  store.updateOwned(writerOne.id, worktreeScope, "writer-reclaimed-before-start", { status: "idle" });
+  const quarantinedWriter = store.recoverInterruptedWriter(
+    writerOne.id,
+    worktreeScope,
+    () => false,
+  );
+  assert.equal(quarantinedWriter.status, "quarantined");
+  assert.equal(quarantinedWriter.runId, undefined);
+  assert.equal(quarantinedWriter.providerStarted, true);
+  assert.throws(
+    () => otherStore.createScoped(worktreeScope, {
+      profileName: "quarantine-conflict",
+      provider: "codex",
+      writeMode: "allowed",
+      runId: "quarantine-conflict",
+    }),
+    /UNIQUE constraint failed/,
+  );
+  store.update(writerOne.id, {
+    status: "error",
+    runId: undefined,
+    workerPid: undefined,
+    stopRequested: false,
+    providerStarted: false,
+  });
+
+  const preProviderWriter = store.createScoped(worktreeScope, {
+    profileName: "pre-provider-writer",
+    provider: "codex",
+    writeMode: "allowed",
+    runId: "pre-provider-writer",
+  });
+  store.claimWorker(preProviderWriter.id, worktreeScope, "pre-provider-writer", 10_007);
+  const preProviderSqlite = new Database(databasePath(root));
+  preProviderSqlite.prepare("update local_agent_sessions set updated_at = ? where id = ?").run(
+    new Date(Date.now() - LOCAL_AGENT_STALE_RUN_MS - 1_000).toISOString(),
+    preProviderWriter.id,
+  );
+  preProviderSqlite.close();
+  const recoveredWriter = store.recoverInterruptedWriter(
+    preProviderWriter.id,
+    worktreeScope,
+    () => false,
+  );
+  assert.equal(recoveredWriter.status, "stopped");
+  assert.equal(recoveredWriter.runId, undefined);
+  assert.equal(recoveredWriter.workerPid, undefined);
+  assert.equal(recoveredWriter.stopRequested, false);
+  assert.match(recoveredWriter.error ?? "", /worktree preserved/);
   const writerTwo = otherStore.createScoped(worktreeScope, {
     profileName: "writer-two",
     provider: "codex",
@@ -317,6 +378,9 @@ function testLegacyMigrationDefaults(stateDir: string): void {
     assert.equal(record?.workspaceMode, "checkout");
     assert.equal(record?.responseTruncated, false);
     assert.equal(record?.profileHash, undefined);
+    assert.equal(record?.workerPid, undefined);
+    assert.equal(record?.stopRequested, false);
+    assert.equal(record?.providerStarted, false);
   } finally {
     migrated.close();
   }

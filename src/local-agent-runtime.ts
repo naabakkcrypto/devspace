@@ -5,6 +5,7 @@ import type {
   SandboxMode,
   ThreadEvent,
   ThreadOptions,
+  TurnOptions,
 } from "@openai/codex-sdk";
 import { chmodSync, copyFileSync, existsSync, mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
@@ -22,6 +23,7 @@ export interface LocalAgentRunInput {
   writeMode?: LocalAgentWriteMode;
   model?: string;
   thinking?: string;
+  signal?: AbortSignal;
 }
 
 export interface LocalAgentRunResult {
@@ -57,7 +59,7 @@ export interface LocalAgentRuntime {
 
 interface CodexThreadLike {
   readonly id: string | null;
-  runStreamed(prompt: string): Promise<{ events: AsyncGenerator<ThreadEvent> }>;
+  runStreamed(prompt: string, options?: TurnOptions): Promise<{ events: AsyncGenerator<ThreadEvent> }>;
 }
 
 interface CodexClientLike {
@@ -199,7 +201,10 @@ export class CodexSdkLocalAgentRuntime implements LocalAgentRuntime {
     const thread = input.providerSessionId
       ? this.codex.resumeThread(input.providerSessionId, options)
       : this.codex.startThread(options);
-    const streamed = await thread.runStreamed(input.prompt);
+    const streamed = await thread.runStreamed(
+      input.prompt,
+      input.signal ? { signal: input.signal } : undefined,
+    );
     let finalResponse = "";
     let responseTruncated = false;
     for await (const event of streamed.events) {

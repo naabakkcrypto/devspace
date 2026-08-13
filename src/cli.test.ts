@@ -87,6 +87,13 @@ try {
     }).id,
     { status: "running" },
   );
+  const stoppable = store.create({
+    workspaceId: "ws_current",
+    workspaceRoot: projectRoot,
+    profileName: "reviewer",
+    provider: "codex",
+    runId: "stop-run",
+  });
   store.close();
 
   const output = execFileSync("node", ["--import", "tsx", "src/cli.ts", "agents", "ls"], {
@@ -130,6 +137,28 @@ try {
     }),
     /Unknown subagent id/,
   );
+
+  const agentsHelp = execFileSync("node", ["--import", "tsx", "src/cli.ts", "agents", "--help"], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+    env: currentEnv,
+  });
+  assert.match(agentsHelp, /devspace agents stop <id>/);
+  assert.match(agentsHelp, /devspace agents recover <id>/);
+  const stopOutput = execFileSync(
+    "node",
+    ["--import", "tsx", "src/cli.ts", "agents", "stop", stoppable.id],
+    { cwd: process.cwd(), encoding: "utf8", env: currentEnv },
+  );
+  assert.match(stopOutput, new RegExp(`${stoppable.id} starting`));
+  assert.match(stopOutput, /stop_requested=true/);
+  const stoppedStore = new LocalAgentStore(stateDir);
+  assert.equal(stoppedStore.getScoped(stoppable.id, {
+    workspaceId: "ws_current",
+    workspaceRoot: projectRoot,
+    workspaceCapability: "cap-current",
+  })?.stopRequested, true);
+  stoppedStore.close();
   assert.throws(
     () => execFileSync("node", ["--import", "tsx", "src/cli.ts", "agents", "wait", current.id, other.id], {
       cwd: process.cwd(),
@@ -167,7 +196,10 @@ try {
   assert.equal((waitResult.stdout.match(new RegExp(`${current.id} idle`, "g")) ?? []).length, 1);
   assert.match(waitResult.stdout, new RegExp(`${waiting.id} running`));
   assert.match(waitResult.stdout, new RegExp(`${waiting.id} idle`));
-  assert.match(waitResult.stdout, /Barrier complete: 2\/2 terminal \(idle=2, error=0, stopped=0\)\./);
+  assert.match(
+    waitResult.stdout,
+    /Barrier complete: 2\/2 terminal \(idle=2, error=0, stopped=0, quarantined=0\)\./,
+  );
   assert.doesNotMatch(waitResult.stdout, /private final response/);
   assert.throws(
     () => execFileSync("node", [

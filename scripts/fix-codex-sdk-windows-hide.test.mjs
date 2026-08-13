@@ -45,7 +45,10 @@ try {
   await mkdir(packageRoot, { recursive: true });
   await mkdir(join(sdkRoot, "dist"), { recursive: true });
   await writeFile(join(packageRoot, "package.json"), '{"name":"@waishnav/devspace"}');
-  await writeFile(join(sdkRoot, "package.json"), '{"name":"@openai/codex-sdk","main":"dist/index.js"}');
+  await writeFile(
+    join(sdkRoot, "package.json"),
+    '{"name":"@openai/codex-sdk","exports":{".":{"import":"./dist/index.js","types":"./dist/index.d.ts"}}}',
+  );
   await writeFile(join(sdkRoot, "dist", "index.js"), "export {};\n");
   assert.equal(
     resolveInstalledCodexSdkPath(packageRoot),
