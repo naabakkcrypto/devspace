@@ -180,7 +180,7 @@ test("checkout reuse and context suppression survive a registry restart", async 
 });
 
 test("codex mode prioritizes complete inspection over call count", async (t) => {
-  const context = await fixture(t, { toolMode: "codex", widgets: "off" });
+  const context = await fixture(t, { toolMode: "codex", widgets: "off", subagents: false });
 
   const instructions = context.client.getInstructions() ?? "";
   assert.match(instructions, /Use as many read or exec_command calls as needed/i);
@@ -188,14 +188,7 @@ test("codex mode prioritizes complete inspection over call count", async (t) => 
     instructions,
     /Never omit relevant evidence merely to reduce visible tool calls, output volume, or token use/i,
   );
-  assert.match(
-    instructions,
-    /native Codex collaboration child-model rules do not govern DevSpace local agent profiles/i,
-  );
-  assert.match(
-    instructions,
-    /prefer the configured Codex Sol profile and its strongest configured reasoning effort/i,
-  );
+  assert.doesNotMatch(instructions, /subagent work/i);
   assert.match(instructions, /On Windows, exec_command runs through cmd\.exe/i);
   assert.match(
     instructions,
@@ -219,6 +212,16 @@ test("codex mode prioritizes complete inspection over call count", async (t) => 
     /Use multiple commands whenever output size, ambiguity, truncation risk, or independent verification/i,
   );
   assert.match(execTool?.description ?? "", /On Windows, this runs through cmd\.exe/i);
+});
+
+test("disabling subagents preserves the exact Codex inline tool catalog and schemas", async (t) => {
+  const enabled = await fixture(t, { toolMode: "codex", widgets: "off", subagents: true });
+  const disabled = await fixture(t, { toolMode: "codex", widgets: "off", subagents: false });
+  const enabledTools = (await enabled.client.listTools()).tools;
+  const disabledTools = (await disabled.client.listTools()).tools;
+
+  assert.deepEqual(disabledTools, enabledTools);
+  assert.ok(disabledTools.length > 0);
 });
 
 test("healthz reports the bounded Codex inline-full posture", async (t) => {
@@ -250,6 +253,10 @@ test("healthz reports the bounded Codex inline-full posture", async (t) => {
 
   const response = await fetch(`http://127.0.0.1:${address.port}/healthz`);
   assert.equal(response.status, 200);
+  assert.equal(response.headers.get("x-powered-by"), null);
+  assert.equal(response.headers.get("x-content-type-options"), "nosniff");
+  assert.equal(response.headers.get("referrer-policy"), "no-referrer");
+  assert.equal(response.headers.get("cache-control"), "no-store");
   const packageMetadata = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")) as {
     version: string;
   };
@@ -279,6 +286,7 @@ interface FixtureOptions {
   git?: boolean;
   toolMode?: ToolMode;
   widgets?: WidgetMode;
+  subagents?: boolean;
 }
 
 async function fixture(t: TestContext, options: FixtureOptions = {}): Promise<ServerFixture> {
@@ -322,7 +330,7 @@ async function fixture(t: TestContext, options: FixtureOptions = {}): Promise<Se
     DEVSPACE_ALLOWED_ROOTS: root,
     DEVSPACE_WORKTREE_ROOT: join(root, ".worktrees"),
     DEVSPACE_AGENT_DIR: agentDir,
-    DEVSPACE_SUBAGENTS: "1",
+    DEVSPACE_SUBAGENTS: options.subagents === false ? "0" : "1",
     DEVSPACE_WIDGETS: options.widgets ?? "full",
     DEVSPACE_TOOL_MODE: options.toolMode ?? "full",
     DEVSPACE_OAUTH_OWNER_TOKEN: "test-owner-token-that-is-long-enough",

@@ -51,6 +51,8 @@ import {
 import { isProcessAlive, terminateProcessTree } from "./process-platform.js";
 import { expandHomePath } from "./roots.js";
 import { shutdownHttpServer } from "./server-shutdown.js";
+import { fingerprintWorkspaceContext } from "./context-integrity.js";
+import { WorkspaceRegistry } from "./workspaces.js";
 
 type Command = "serve" | "init" | "doctor" | "config" | "agents" | "help" | "version";
 const require = createRequire(import.meta.url);
@@ -71,7 +73,7 @@ async function main(argv: string[]): Promise<void> {
       await runInit({ force: args.includes("--force") });
       return;
     case "doctor":
-      await runDoctor();
+      await runDoctor(args);
       return;
     case "config":
       runConfigCommand(args);
@@ -258,7 +260,17 @@ async function serve(): Promise<void> {
   process.once("SIGTERM", handleShutdown);
 }
 
-async function runDoctor(): Promise<void> {
+async function runDoctor(args: string[] = []): Promise<void> {
+  const contextFlag = args.indexOf("--context");
+  if (contextFlag >= 0) {
+    const projectPath = args[contextFlag + 1];
+    if (!projectPath) throw new Error("Usage: devspace doctor --context <project-path> --json");
+    const config = loadConfig();
+    const context = await new WorkspaceRegistry(config).openWorkspace(projectPath);
+    const fingerprint = await fingerprintWorkspaceContext(context, config);
+    console.log(JSON.stringify(fingerprint, null, args.includes("--json") ? 0 : 2));
+    return;
+  }
   const files = loadDevspaceFiles();
   console.log(`Config dir: ${files.dir}`);
   console.log(`Config file: ${files.configExists ? files.configPath : "missing"}`);
@@ -319,6 +331,8 @@ function printHelp(): void {
       "  devspace serve           Start the server",
       "  devspace init            Create or update ~/.devspace/config.json and auth.json",
       "  devspace doctor          Show config, runtime, and native dependency status",
+      "  devspace doctor --context <project-path> --json",
+      "                           Print a content-safe context parity fingerprint",
       "  devspace config get      Print persisted config",
       "  devspace config set publicBaseUrl <url|null>",
       "  devspace agents ls       List subagent sessions",
