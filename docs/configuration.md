@@ -177,6 +177,23 @@ them into one of the active profile directories before use.
 
 Legacy project paths such as `.pi/skills` can be added through `DEVSPACE_SKILL_PATHS` when needed.
 
+For an inline ChatGPT workflow that must preserve the user's complete Codex
+context without allowing delegated model sessions, use the following settings
+together:
+
+```text
+DEVSPACE_TOOL_MODE=codex
+DEVSPACE_WIDGETS=off
+DEVSPACE_SKILLS=1
+DEVSPACE_SUBAGENTS=0
+DEVSPACE_AGENT_DIR=/path/to/the/existing/.codex
+```
+
+When those behavioral flags are active, `/healthz` reports the bounded
+`codex-inline-full` posture. Instruction and skill discovery remain enabled;
+agent providers are not loaded and `devspace agents ...` remains unavailable.
+The health response never includes the configured agent directory path.
+
 Example:
 
 ```bash

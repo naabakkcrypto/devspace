@@ -32,6 +32,12 @@ C:\
 The narrower the root, the easier it is to reason about what the MCP client can
 reach.
 
+File tools validate both the requested lexical path and the resolved filesystem
+target (or nearest existing parent). A symbolic link or Windows junction inside
+an allowed workspace cannot redirect `read`, `write`, or `edit` outside the
+applicable root. Shell commands remain intentionally outside this containment
+boundary and run with the local user's authority.
+
 ## Owner Password
 
 `devspace init` generates an Owner password and stores it in:

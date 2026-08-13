@@ -49,6 +49,7 @@ import {
   type McpSessionCloseResult,
 } from "./mcp-sessions.js";
 import { ProcessSessionManager, type ProcessSnapshot } from "./process-sessions.js";
+import { DEVSPACE_VERSION } from "./package-version.js";
 import { createReviewCheckpointManager } from "./review-checkpoints.js";
 import { openAiConversationScopeId } from "./request-meta.js";
 import { shutdownHttpServer } from "./server-shutdown.js";
@@ -718,7 +719,7 @@ export function createMcpServer(
     {
       name: "devspace",
       title: "DevSpace",
-      version: "0.1.0",
+      version: DEVSPACE_VERSION,
       description:
         "Coding tools for project workspaces. Open each project or worktree once, then reuse its workspaceId.",
     },
@@ -1792,7 +1793,22 @@ export function createServer(
   );
 
   app.get("/healthz", (_req, res) => {
-    res.json({ ok: true, name: "devspace" });
+    const inlineFull = config.toolMode === "codex"
+      && config.widgets === "off"
+      && config.skillsEnabled
+      && !config.subagents;
+    res.json({
+      ok: true,
+      name: "devspace",
+      version: DEVSPACE_VERSION,
+      contextProfile: inlineFull ? "codex-inline-full" : "custom",
+      toolMode: config.toolMode,
+      widgets: config.widgets,
+      skillsEnabled: config.skillsEnabled,
+      subagentsEnabled: config.subagents,
+      delegationEnabled: config.subagents,
+      agentProvidersLoaded: localAgentProviders.length,
+    });
   });
 
   app.all("/mcp", async (req, res) => {

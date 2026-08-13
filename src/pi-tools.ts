@@ -16,7 +16,7 @@ import {
   type WriteToolInput,
   type AgentToolResult,
 } from "@earendil-works/pi-coding-agent";
-import { resolveAllowedPath } from "./roots.js";
+import { resolveAllowedPath, resolveAllowedRealPath } from "./roots.js";
 
 type McpContent = { type: "text"; text: string } | { type: "image"; data: string; mimeType: string };
 export type ToolResponse<TDetails = unknown> = {
@@ -67,34 +67,43 @@ async function runTool<TInput, TDetails = unknown>(
 }
 
 export async function readFileTool(input: ReadToolInput, context: ToolContext): Promise<ToolResponse> {
-  const path = resolveAllowedPath(input.path, context.cwd, context.readRoots ?? [context.root]);
-  const tool = createReadTool(context.cwd);
-
-  return runTool((params) => tool.execute("read_file", params), {
-    path,
-    offset: input.offset,
-    limit: input.limit,
-  }, context);
+  try {
+    const path = await resolveAllowedRealPath(input.path, context.cwd, context.readRoots ?? [context.root]);
+    const tool = createReadTool(context.cwd);
+    return runTool((params) => tool.execute("read_file", params), {
+      path,
+      offset: input.offset,
+      limit: input.limit,
+    }, context);
+  } catch (error) {
+    return { content: formatToolError(error), isError: true };
+  }
 }
 
 export async function writeFileTool(input: WriteToolInput, context: ToolContext): Promise<ToolResponse> {
-  const path = resolveAllowedPath(input.path, context.cwd, [context.root]);
-  const tool = createWriteTool(context.cwd);
-
-  return runTool((params) => tool.execute("write_file", params), {
-    path,
-    content: input.content,
-  }, context);
+  try {
+    const path = await resolveAllowedRealPath(input.path, context.cwd, [context.root]);
+    const tool = createWriteTool(context.cwd);
+    return runTool((params) => tool.execute("write_file", params), {
+      path,
+      content: input.content,
+    }, context);
+  } catch (error) {
+    return { content: formatToolError(error), isError: true };
+  }
 }
 
 export async function editFileTool(input: EditToolInput, context: ToolContext): Promise<ToolResponse<EditToolDetails>> {
-  const path = resolveAllowedPath(input.path, context.cwd, [context.root]);
-  const tool = createEditTool(context.cwd);
-
-  return runTool((params) => tool.execute("edit_file", params), {
-    path,
-    edits: input.edits,
-  }, context);
+  try {
+    const path = await resolveAllowedRealPath(input.path, context.cwd, [context.root]);
+    const tool = createEditTool(context.cwd);
+    return runTool((params) => tool.execute("edit_file", params), {
+      path,
+      edits: input.edits,
+    }, context);
+  } catch (error) {
+    return { content: formatToolError(error), isError: true };
+  }
 }
 
 export async function grepFilesTool(input: GrepToolInput, context: ToolContext): Promise<ToolResponse> {

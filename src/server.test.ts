@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -15,7 +15,7 @@ import {
 } from "./config.js";
 import { createReviewCheckpointManager } from "./review-checkpoints.js";
 import { ProcessSessionManager } from "./process-sessions.js";
-import { createMcpServer } from "./server.js";
+import { createMcpServer, createServer } from "./server.js";
 import { SqliteWorkspaceStore } from "./workspace-store.js";
 import { WorkspaceRegistry } from "./workspaces.js";
 
@@ -219,6 +219,52 @@ test("codex mode prioritizes complete inspection over call count", async (t) => 
     /Use multiple commands whenever output size, ambiguity, truncation risk, or independent verification/i,
   );
   assert.match(execTool?.description ?? "", /On Windows, this runs through cmd\.exe/i);
+});
+
+test("healthz reports the bounded Codex inline-full posture", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "devspace-health-test-"));
+  const config = loadConfig({
+    DEVSPACE_CONFIG_DIR: join(root, ".config"),
+    DEVSPACE_ALLOWED_ROOTS: root,
+    DEVSPACE_AGENT_DIR: join(root, ".codex"),
+    DEVSPACE_SKILLS: "1",
+    DEVSPACE_SUBAGENTS: "0",
+    DEVSPACE_WIDGETS: "off",
+    DEVSPACE_TOOL_MODE: "codex",
+    DEVSPACE_OAUTH_OWNER_TOKEN: "test-owner-token-that-is-long-enough",
+    HOST: "127.0.0.1",
+    PORT: "1",
+  });
+  const running = createServer(config);
+  const httpServer = running.app.listen(0, "127.0.0.1");
+  t.after(async () => {
+    await new Promise<void>((resolve, reject) => {
+      httpServer.close((error) => error ? reject(error) : resolve());
+    });
+    await running.close();
+    await rm(root, { recursive: true, force: true });
+  });
+  await new Promise<void>((resolve) => httpServer.once("listening", resolve));
+  const address = httpServer.address();
+  assert.ok(address && typeof address === "object");
+
+  const response = await fetch(`http://127.0.0.1:${address.port}/healthz`);
+  assert.equal(response.status, 200);
+  const packageMetadata = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")) as {
+    version: string;
+  };
+  assert.deepEqual(await response.json(), {
+    ok: true,
+    name: "devspace",
+    version: packageMetadata.version,
+    contextProfile: "codex-inline-full",
+    toolMode: "codex",
+    widgets: "off",
+    skillsEnabled: true,
+    subagentsEnabled: false,
+    delegationEnabled: false,
+    agentProvidersLoaded: 0,
+  });
 });
 
 interface ServerFixture {

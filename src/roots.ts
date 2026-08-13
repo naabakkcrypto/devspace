@@ -1,5 +1,6 @@
+import { realpath } from "node:fs/promises";
 import { homedir } from "node:os";
-import { isAbsolute, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 
 export class AccessDeniedError extends Error {
   constructor(message: string) {
@@ -43,4 +44,41 @@ export function assertAllowedPath(path: string, allowedRoots: string[]): string 
 export function resolveAllowedPath(inputPath: string, cwd: string, allowedRoots: string[]): string {
   const absolutePath = resolve(cwd, inputPath);
   return assertAllowedPath(absolutePath, allowedRoots);
+}
+
+export async function resolveAllowedRealPath(
+  inputPath: string,
+  cwd: string,
+  allowedRoots: string[],
+): Promise<string> {
+  const absolutePath = resolveAllowedPath(inputPath, cwd, allowedRoots);
+  const realRoots = await Promise.all(allowedRoots.map(async (root) => {
+    const resolvedRoot = resolve(expandHomePath(root));
+    try {
+      return await realpath(resolvedRoot);
+    } catch {
+      return resolvedRoot;
+    }
+  }));
+  const realTarget = await nearestExistingRealPath(absolutePath);
+  if (realRoots.some((root) => isPathInsideRoot(realTarget, root))) {
+    return absolutePath;
+  }
+
+  throw new AccessDeniedError(`Path resolves outside allowed roots: ${inputPath}`);
+}
+
+async function nearestExistingRealPath(path: string): Promise<string> {
+  let candidate = path;
+  while (true) {
+    try {
+      return await realpath(candidate);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "ENOENT" && code !== "ENOTDIR") throw error;
+      const parent = dirname(candidate);
+      if (parent === candidate) throw error;
+      candidate = parent;
+    }
+  }
 }
