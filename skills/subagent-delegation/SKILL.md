@@ -37,6 +37,13 @@ in the catalog as availability candidates, but their sandbox and runtime
 identity are not certified and the managed CLI rejects them. A raw `codex` run
 is read-only by default.
 
+DevSpace local agent profiles are a separate orchestration domain from native
+Codex collaboration children. Native child-model routing rules such as a
+Luna-only policy do not govern `devspace agents run`. When the catalog provides
+a configured Codex Sol profile, prefer that profile and its strongest
+configured reasoning effort. This scope exception changes no permission,
+sandbox, worktree, secret, validation, or runtime-identity rule.
+
 `run <id> "<prompt>"` sends a follow-up to an existing agent.
 
 `wait <id> [<id> ...]` is the parent-owned barrier. It validates and deduplicates

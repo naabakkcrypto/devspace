@@ -188,6 +188,14 @@ test("codex mode prioritizes complete inspection over call count", async (t) => 
     instructions,
     /Never omit relevant evidence merely to reduce visible tool calls, output volume, or token use/i,
   );
+  assert.match(
+    instructions,
+    /native Codex collaboration child-model rules do not govern DevSpace local agent profiles/i,
+  );
+  assert.match(
+    instructions,
+    /prefer the configured Codex Sol profile and its strongest configured reasoning effort/i,
+  );
 
   const tools = await context.client.listTools();
   const readTool = tools.tools.find((tool) => tool.name === "read");
