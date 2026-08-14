@@ -179,15 +179,28 @@ test("checkout reuse and context suppression survive a registry restart", async 
   }
 });
 
-test("codex mode prioritizes complete inspection over call count", async (t) => {
+test("codex mode applies an adaptive tool-efficiency policy", async (t) => {
   const context = await fixture(t, { toolMode: "codex", widgets: "off", subagents: false });
 
   const instructions = context.client.getInstructions() ?? "";
-  assert.match(instructions, /Use as many read or exec_command calls as needed/i);
+  assert.match(instructions, /Use the fewest tool calls that preserve correctness, completeness, and verifiability/i);
   assert.match(
     instructions,
-    /Never omit relevant evidence merely to reduce visible tool calls, output volume, or token use/i,
+    /Keep one active user objective per turn/i,
   );
+  assert.match(
+    instructions,
+    /Broad authorization removes repeated confirmation gates but does not authorize starting later backlog or TODO items/i,
+  );
+  assert.match(
+    instructions,
+    /After roughly 30 direct tool calls for the same objective, perform a soft efficiency checkpoint/i,
+  );
+  assert.match(
+    instructions,
+    /Repeated calls that produce no new evidence are diminishing returns/i,
+  );
+  assert.doesNotMatch(instructions, /Use as many read or exec_command calls as needed/i);
   assert.doesNotMatch(instructions, /subagent work/i);
   assert.match(instructions, /On Windows, exec_command runs through cmd\.exe/i);
   assert.match(
@@ -198,19 +211,21 @@ test("codex mode prioritizes complete inspection over call count", async (t) => 
   const tools = await context.client.listTools();
   const readTool = tools.tools.find((tool) => tool.name === "read");
   const execTool = tools.tools.find((tool) => tool.name === "exec_command");
-  assert.match(readTool?.description ?? "", /Use as many read calls as needed/i);
+  assert.match(readTool?.description ?? "", /Prefer the smallest set of reads that preserves complete relevant context/i);
+  assert.match(readTool?.description ?? "", /Repeated reads without new evidence are diminishing returns/i);
   assert.match(
     readTool?.description ?? "",
     /Split the work whenever output size, ambiguity, truncation risk, or independent verification/i,
   );
   assert.match(
     execTool?.description ?? "",
-    /Group related inspections only when this preserves complete relevant evidence and clear file provenance/i,
+    /Prefer grouped commands over equivalent micro-calls when this preserves complete relevant evidence and clear file provenance/i,
   );
   assert.match(
     execTool?.description ?? "",
     /Use multiple commands whenever output size, ambiguity, truncation risk, or independent verification/i,
   );
+  assert.match(execTool?.description ?? "", /Repeated commands without new evidence are diminishing returns/i);
   assert.match(execTool?.description ?? "", /On Windows, this runs through cmd\.exe/i);
 });
 
