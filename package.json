@@ -25,10 +25,11 @@
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
     "build": "npm run clean && npm run build:app && tsc -p tsconfig.build.json",
-    "build:app": "vite build",
+    "build:app": "vite build && node scripts/check-ui-bundle-budget.mjs",
     "dev": "node scripts/dev-server.mjs",
     "postinstall": "node scripts/fix-node-pty-permissions.mjs && node scripts/fix-codex-sdk-windows-hide.mjs",
     "start": "node dist/cli.js serve",
+    "pretest": "node scripts/check-ui-bundle-budget.test.mjs",
     "test": "node scripts/fix-codex-sdk-windows-hide.test.mjs && tsx src/config.test.ts && tsx src/request-meta.test.ts && tsx src/incoming-artifacts.test.ts && tsx src/artifact-download.test.ts && tsx src/ui/card-types.test.ts && tsx src/ui/patch-display.test.ts && tsx src/ui/tool-display.test.ts && tsx src/apply-patch.test.ts && tsx src/process-platform.test.ts && tsx src/process-sessions.test.ts && tsx src/mcp-sessions.test.ts && tsx src/server-shutdown.test.ts && tsx src/local-agent-runtime.test.ts && tsx src/local-agent-adapters.test.ts && tsx src/local-agent-availability.test.ts && tsx src/local-agent-profiles.test.ts && tsx src/local-agent-targets.test.ts && tsx src/local-agent-store.test.ts && tsx src/local-agent-execution-root.test.ts && tsx src/roots.test.ts && tsx src/skills.test.ts && tsx src/workspaces.test.ts && tsx src/workspace-conversation.test.ts && tsx src/context-integrity.test.ts && tsx src/review-checkpoints.test.ts && tsx src/server.test.ts && tsx src/oauth-store.test.ts && tsx src/oauth-provider.test.ts && tsx src/cli.test.ts && tsx src/local-agent-transport.test.ts",
     "canary:writer": "npm run build && node scripts/canary-codex-writer-worktree.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit"
@@ -40,13 +41,13 @@
     "@agentclientprotocol/sdk": "^1.1.0",
     "@anthropic-ai/claude-agent-sdk": "^0.3.200",
     "@clack/prompts": "^1.5.1",
-    "@earendil-works/pi-coding-agent": "^0.84.1",
+    "@earendil-works/pi-coding-agent": "^0.84.2",
     "@modelcontextprotocol/ext-apps": "^1.7.2",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@openai/codex-sdk": "^0.142.5",
     "@opencode-ai/sdk": "^1.17.13",
     "@pierre/diffs": "^1.2.5",
-    "better-sqlite3": "^12.10.0",
+    "better-sqlite3": "^13.0.3",
     "diff": "^8.0.3",
     "drizzle-orm": "^0.45.2",
     "express": "^5.2.1",
@@ -58,7 +59,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.13",
+    "@types/better-sqlite3": "^9.6.0",
     "@types/express": "^5.0.6",
     "@types/node": "^25.9.1",
     "@types/react": "^19.2.15",
@@ -84,5 +85,13 @@
   },
   "optionalDependencies": {
     "node-pty": "^1.1.0"
+  },
+  "allowScripts": {
+    "@google/genai@1.52.0": true,
+    "protobufjs@7.6.5": true,
+    "better-sqlite3@13.0.3": true,
+    "esbuild@0.28.1": true,
+    "fsevents@2.3.3": false,
+    "node-pty@1.1.0": true
   }
 }
