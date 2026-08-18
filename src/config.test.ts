@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { loadConfig } from "./config.js";
 import { ensureDevspaceDefaultSkills, resolveSubagentsFlag } from "./user-config.js";
 
@@ -29,6 +29,26 @@ assert.deepEqual(
   ["using-superpowers", "writing-plans"],
 );
 assert.equal(loadConfig(baseEnv).requireGlobalAgents, false);
+assert.equal(loadConfig(baseEnv).mcpBridge, undefined);
+assert.throws(
+  () => loadConfig({ ...baseEnv, DEVSPACE_MCP_BRIDGE: "1" }),
+  /DEVSPACE_MCP_BRIDGE_CATALOG is required/,
+);
+assert.deepEqual(loadConfig({
+  ...baseEnv,
+  DEVSPACE_MCP_BRIDGE: "1",
+  DEVSPACE_MCP_BRIDGE_CATALOG: "catalog.json",
+  DEVSPACE_MCP_BRIDGE_CODEX_CONFIG: "config.toml",
+  DEVSPACE_MCP_BRIDGE_PROFILE_STATE: "state.json",
+  DEVSPACE_MCP_BRIDGE_PROFILE_REGISTRY: "profiles",
+  DEVSPACE_MCP_BRIDGE_TENANT_RESOLVER: "resolver.ps1",
+}).mcpBridge, {
+  catalogPath: resolve("catalog.json"),
+  codexConfigPath: resolve("config.toml"),
+  profileStatePath: resolve("state.json"),
+  profileRegistryRoot: resolve("profiles"),
+  tenantResolverPath: resolve("resolver.ps1"),
+});
 assert.equal(loadConfig({ ...baseEnv, DEVSPACE_REQUIRE_GLOBAL_AGENTS: "1" }).requireGlobalAgents, true);
 assert.equal(loadConfig(baseEnv).devspaceSkillsDir, join(emptyConfigDir, "skills"));
 assert.equal(loadConfig(baseEnv).devspaceAgentsDir, join(emptyConfigDir, "agents"));

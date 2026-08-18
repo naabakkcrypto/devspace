@@ -26,6 +26,7 @@ import {
 } from "./server.js";
 import { SqliteWorkspaceStore } from "./workspace-store.js";
 import { WorkspaceRegistry } from "./workspaces.js";
+import type { McpBridgeToolRuntime } from "./mcp-bridge-tools.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -194,6 +195,51 @@ test("checkout reuse and context suppression survive a registry restart", async 
   }
 });
 
+test("bridged MCP tools are exposed with workspace scope and forward upstream results", async (t) => {
+  const calls: Array<Record<string, unknown>> = [];
+  const mcpBridge = {
+    catalog: {
+      schemaVersion: 1,
+      profile: "max",
+      configSha256: "a".repeat(64),
+      stateConfigDrift: false,
+      aggregateSha256: "b".repeat(64),
+      servers: [{
+        name: "demo",
+        transport: "stdio",
+        tools: [{
+          name: "ping",
+          description: "Ping upstream",
+          inputSchema: { type: "object", properties: { value: { type: "string" } }, required: ["value"] },
+        }],
+      }],
+    },
+    manager: {
+      async call(input: Record<string, unknown>) {
+        calls.push(input);
+        return { content: [{ type: "text", text: "pong" }] };
+      },
+      async close() {},
+    },
+    tenantResolverPath: "unused.ps1",
+  } as unknown as McpBridgeToolRuntime;
+  const context = await fixture(t, { mcpBridge });
+  const opened = await callOpen(context.client, context.project, "bridge-chat");
+  const workspaceId = String(structuredContent(opened).workspaceId);
+  const tools = await context.client.listTools();
+  assert.ok(tools.tools.some((tool) => tool.name === "mcp__demo__ping"));
+  const result = await context.client.callTool({
+    name: "mcp__demo__ping",
+    arguments: { workspaceId, value: "hello" },
+  });
+  const content = result.content as Array<{ text?: string }>;
+  assert.equal(content[0]?.text, "pong");
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]?.workspaceId, workspaceId);
+  assert.deepEqual(calls[0]?.argumentsValue, { value: "hello" });
+  assert.equal((calls[0]?.scope as { workspaceRoot?: string }).workspaceRoot, context.project);
+});
+
 test("reopening a stale conversation refreshes its full context before tools resume", async (t) => {
   const context = await fixture(t);
   const first = await callOpen(context.client, context.project, "chat-stale");
@@ -332,6 +378,10 @@ test("healthz reports the bounded Codex inline-full posture", async (t) => {
     globalRulesReady: true,
     globalRulesRequired: true,
     globalRulesSha256: createHash("sha256").update(globalRules).digest("hex"),
+    mcpBridgeReady: false,
+    mcpBridgeServers: 0,
+    mcpBridgeTools: 0,
+    nativeMcpRoutesExposed: false,
     inFlightMcpRequests: 0,
   });
 
@@ -396,6 +446,7 @@ interface FixtureOptions {
   toolMode?: ToolMode;
   widgets?: WidgetMode;
   subagents?: boolean;
+  mcpBridge?: McpBridgeToolRuntime;
 }
 
 async function fixture(t: TestContext, options: FixtureOptions = {}): Promise<ServerFixture> {
@@ -454,6 +505,7 @@ async function fixture(t: TestContext, options: FixtureOptions = {}): Promise<Se
     new ProcessSessionManager(),
     [],
     [],
+    options.mcpBridge,
   );
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   const client = new Client({ name: "devspace-test-client", version: "1.0.0" });

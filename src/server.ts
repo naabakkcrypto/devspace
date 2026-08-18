@@ -50,6 +50,13 @@ import {
 } from "./pi-tools.js";
 import { SingleUserOAuthProvider } from "./oauth-provider.js";
 import {
+  createSdkMcpBridgeConnection,
+  loadMcpBridgeCatalog,
+  loadMcpBridgeRuntimeProfile,
+  McpBridgeManager,
+} from "./mcp-bridge.js";
+import { registerMcpBridgeTools, type McpBridgeToolRuntime } from "./mcp-bridge-tools.js";
+import {
   McpSessionRegistry,
   type McpSessionCloseResult,
 } from "./mcp-sessions.js";
@@ -721,6 +728,7 @@ export function createMcpServer(
   processSessions: ProcessSessionManager,
   localAgentProviders: LocalAgentProviderAvailability[],
   incomingArtifactAdapters: readonly IncomingArtifactAdapter[],
+  mcpBridge?: McpBridgeToolRuntime,
 ): McpServer {
   const server = new McpServer(
     {
@@ -734,6 +742,8 @@ export function createMcpServer(
       instructions: serverInstructions(config),
     },
   );
+
+  if (mcpBridge) registerMcpBridgeTools(server, workspaces, mcpBridge);
 
   registerAppResource(
     server,
@@ -1733,6 +1743,21 @@ export function createServer(
   const workspaces = new WorkspaceRegistry(config, workspaceStore);
   const reviewCheckpoints = createReviewCheckpointManager();
   const processSessions = new ProcessSessionManager();
+  const mcpBridge = config.mcpBridge
+    ? (() => {
+        const runtime = loadMcpBridgeRuntimeProfile({
+          codexConfigPath: config.mcpBridge.codexConfigPath,
+          profileStatePath: config.mcpBridge.profileStatePath,
+          profileRegistryRoot: config.mcpBridge.profileRegistryRoot,
+        });
+        const catalog = loadMcpBridgeCatalog(config.mcpBridge.catalogPath);
+        return {
+          catalog,
+          manager: new McpBridgeManager(runtime, catalog, createSdkMcpBridgeConnection),
+          tenantResolverPath: config.mcpBridge.tenantResolverPath,
+        } satisfies McpBridgeToolRuntime;
+      })()
+    : undefined;
   let inFlightMcpRequests = 0;
   const localAgentProviders = config.subagents
     ? getLocalAgentProviderAvailabilitySnapshot()
@@ -1844,6 +1869,12 @@ export function createServer(
       globalRulesReady: globalRules.ready,
       globalRulesRequired: globalRules.required,
       globalRulesSha256: globalRules.sha256,
+      mcpBridgeReady: mcpBridge !== undefined,
+      mcpBridgeProfile: mcpBridge?.catalog.profile,
+      mcpBridgeServers: mcpBridge?.catalog.servers.length ?? 0,
+      mcpBridgeTools: mcpBridge?.catalog.servers.reduce((count, entry) => count + entry.tools.length, 0) ?? 0,
+      mcpBridgeAggregateSha256: mcpBridge?.catalog.aggregateSha256,
+      nativeMcpRoutesExposed: mcpBridge !== undefined,
       inFlightMcpRequests,
     });
   });
@@ -1930,6 +1961,7 @@ export function createServer(
           processSessions,
           localAgentProviders,
           incomingArtifactAdapters,
+          mcpBridge,
         );
         await server.connect(transport);
       } else {
@@ -1940,6 +1972,7 @@ export function createServer(
           processSessions,
           localAgentProviders,
           incomingArtifactAdapters,
+          mcpBridge,
         );
         logEvent(config.logging, "warn", "mcp_sessionless_request_compat", {
           requestId,
@@ -1974,6 +2007,7 @@ export function createServer(
         const results = await transports.closeAll();
         logSessionCloseResults("server_shutdown", results);
         processSessions.shutdown();
+        await mcpBridge?.manager.close();
         oauthProvider.close();
         workspaceStore.close?.();
       })();

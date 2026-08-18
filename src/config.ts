@@ -32,7 +32,30 @@ export interface ServerConfig {
   subagents: boolean;
   agentDir: string;
   requireGlobalAgents: boolean;
+  mcpBridge?: {
+    catalogPath: string;
+    codexConfigPath: string;
+    profileStatePath: string;
+    profileRegistryRoot: string;
+    tenantResolverPath: string;
+  };
   logging: LoggingConfig;
+}
+
+function parseMcpBridgeConfig(env: NodeJS.ProcessEnv): ServerConfig["mcpBridge"] {
+  if (!parseBoolean(env.DEVSPACE_MCP_BRIDGE)) return undefined;
+  const required = (name: string): string => {
+    const value = env[name]?.trim();
+    if (!value) throw new Error(`${name} is required when DEVSPACE_MCP_BRIDGE is enabled`);
+    return resolve(expandHomePath(value));
+  };
+  return {
+    catalogPath: required("DEVSPACE_MCP_BRIDGE_CATALOG"),
+    codexConfigPath: required("DEVSPACE_MCP_BRIDGE_CODEX_CONFIG"),
+    profileStatePath: required("DEVSPACE_MCP_BRIDGE_PROFILE_STATE"),
+    profileRegistryRoot: required("DEVSPACE_MCP_BRIDGE_PROFILE_REGISTRY"),
+    tenantResolverPath: required("DEVSPACE_MCP_BRIDGE_TENANT_RESOLVER"),
+  };
 }
 
 function parsePort(value: string | number | undefined): number {
@@ -261,6 +284,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
         : parseBoolean(env.DEVSPACE_SUBAGENTS),
     agentDir: resolve(expandHomePath(env.DEVSPACE_AGENT_DIR ?? files.config.agentDir ?? defaultAgentDir())),
     requireGlobalAgents: parseBoolean(env.DEVSPACE_REQUIRE_GLOBAL_AGENTS),
+    mcpBridge: parseMcpBridgeConfig(env),
     logging: parseLoggingConfig(env),
   };
 }

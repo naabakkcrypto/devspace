@@ -3,6 +3,12 @@ import { readFile } from "node:fs/promises";
 import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { ServerConfig } from "./config.js";
 import type { WorkspaceContext } from "./workspaces.js";
+import {
+  createSdkMcpBridgeConnection,
+  loadMcpBridgeCatalog,
+  loadMcpBridgeRuntimeProfile,
+  McpBridgeManager,
+} from "./mcp-bridge.js";
 
 interface FingerprintEntry {
   key: string;
@@ -33,7 +39,7 @@ export interface WorkspaceContextFingerprint {
   capabilities: {
     skillInstructionsAvailable: boolean;
     localShellAvailable: boolean;
-    nativeMcpRoutesExposed: false;
+    nativeMcpRoutesExposed: boolean;
     naabakkSkillCount: number;
   };
   subagentProfiles: number;
@@ -58,6 +64,7 @@ export async function fingerprintWorkspaceContext(
   context: WorkspaceContext,
   config: ServerConfig,
 ): Promise<WorkspaceContextFingerprint> {
+  const nativeMcpRoutesExposed = validateMcpBridgeReadiness(config);
   const instructions = context.agentsFiles
     .map((file) => ({
       key: contextPathKey(file.path, context.workspace.root, config.agentDir),
@@ -102,7 +109,7 @@ export async function fingerprintWorkspaceContext(
     capabilities: {
       skillInstructionsAvailable: config.skillsEnabled,
       localShellAvailable: true,
-      nativeMcpRoutesExposed: false as const,
+      nativeMcpRoutesExposed,
       naabakkSkillCount: skills.filter((skill) => skill.name.startsWith("naabakk-")).length,
     },
     subagentProfiles: context.workspace.agentProfiles.length,
@@ -111,6 +118,18 @@ export async function fingerprintWorkspaceContext(
     ...fingerprint,
     aggregateSha256: sha256(stableJson(fingerprint)),
   };
+}
+
+function validateMcpBridgeReadiness(config: ServerConfig): boolean {
+  if (!config.mcpBridge) return false;
+  const runtime = loadMcpBridgeRuntimeProfile({
+    codexConfigPath: config.mcpBridge.codexConfigPath,
+    profileStatePath: config.mcpBridge.profileStatePath,
+    profileRegistryRoot: config.mcpBridge.profileRegistryRoot,
+  });
+  const catalog = loadMcpBridgeCatalog(config.mcpBridge.catalogPath);
+  new McpBridgeManager(runtime, catalog, createSdkMcpBridgeConnection);
+  return true;
 }
 
 export function compactContextReceipt(fingerprint: WorkspaceContextFingerprint) {
