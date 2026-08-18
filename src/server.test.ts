@@ -7,6 +7,8 @@ import test, { type TestContext } from "node:test";
 import { promisify } from "node:util";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
   loadConfig,
   type ServerConfig,
@@ -15,7 +17,12 @@ import {
 } from "./config.js";
 import { createReviewCheckpointManager } from "./review-checkpoints.js";
 import { ProcessSessionManager } from "./process-sessions.js";
-import { createMcpServer, createServer } from "./server.js";
+import {
+  classifyMcpRequestMode,
+  createMcpServer,
+  createServer,
+  handleStatelessMcpRequest,
+} from "./server.js";
 import { SqliteWorkspaceStore } from "./workspace-store.js";
 import { WorkspaceRegistry } from "./workspaces.js";
 
@@ -286,7 +293,48 @@ test("healthz reports the bounded Codex inline-full posture", async (t) => {
     subagentsEnabled: false,
     delegationEnabled: false,
     agentProvidersLoaded: 0,
+    inFlightMcpRequests: 0,
   });
+});
+
+test("sessionless tunnel tool calls use the stateless compatibility transport", () => {
+  assert.equal(classifyMcpRequestMode(undefined, false), "stateless");
+  assert.equal(classifyMcpRequestMode(undefined, true), "initialize");
+  assert.equal(classifyMcpRequestMode("existing-session", false), "existing");
+});
+
+test("a sessionless tunnel tools/call succeeds without an initialize round trip", async (t) => {
+  const app = createMcpExpressApp();
+  app.post("/mcp", async (req, res) => {
+    const server = new McpServer({ name: "sessionless-compat-test", version: "1.0.0" });
+    server.registerTool("ping", {}, async () => ({ content: [{ type: "text", text: "pong" }] }));
+    await handleStatelessMcpRequest(server, req, res);
+  });
+  const httpServer = app.listen(0, "127.0.0.1");
+  t.after(async () => {
+    await new Promise<void>((resolve, reject) => {
+      httpServer.close((error) => error ? reject(error) : resolve());
+    });
+  });
+  await new Promise<void>((resolve) => httpServer.once("listening", resolve));
+  const address = httpServer.address();
+  assert.ok(address && typeof address === "object");
+
+  const response = await fetch(`http://127.0.0.1:${address.port}/mcp`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      accept: "application/json, text/event-stream",
+    },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: { name: "ping", arguments: {} },
+    }),
+  });
+  assert.equal(response.status, 200);
+  assert.match(await response.text(), /pong/);
 });
 
 interface ServerFixture {

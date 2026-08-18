@@ -1711,6 +1711,7 @@ export function createServer(
   const workspaces = new WorkspaceRegistry(config, workspaceStore);
   const reviewCheckpoints = createReviewCheckpointManager();
   const processSessions = new ProcessSessionManager();
+  let inFlightMcpRequests = 0;
   const localAgentProviders = config.subagents
     ? getLocalAgentProviderAvailabilitySnapshot()
     : [];
@@ -1815,6 +1816,7 @@ export function createServer(
       subagentsEnabled: config.subagents,
       delegationEnabled: config.subagents,
       agentProvidersLoaded: localAgentProviders.length,
+      inFlightMcpRequests,
     });
   });
   app.all("/mcp", async (req, res) => {
@@ -1829,6 +1831,16 @@ export function createServer(
       });
     });
     if (res.headersSent) return;
+
+    inFlightMcpRequests += 1;
+    let requestFinished = false;
+    const finishRequest = () => {
+      if (requestFinished) return;
+      requestFinished = true;
+      inFlightMcpRequests = Math.max(0, inFlightMcpRequests - 1);
+    };
+    res.once("finish", finishRequest);
+    res.once("close", finishRequest);
 
     if (!req.auth?.resource || !checkResourceAllowed({ requestedResource: req.auth.resource, configuredResource: resourceServerUrl })) {
       logEvent(config.logging, "warn", "auth_denied", {
@@ -1853,13 +1865,14 @@ export function createServer(
     try {
       let transport: Transport | undefined;
 
-      if (sessionId) {
-        transport = transports.get(sessionId);
+      const requestMode = classifyMcpRequestMode(sessionId, initializeRequest);
+      if (requestMode === "existing") {
+        transport = transports.get(sessionId!);
         if (!transport) {
           sendJsonRpcError(res, 404, -32000, "Unknown MCP session");
           return;
         }
-      } else if (initializeRequest) {
+      } else if (requestMode === "initialize") {
         transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
           onsessioninitialized: (newSessionId) => {
@@ -1892,7 +1905,21 @@ export function createServer(
         );
         await server.connect(transport);
       } else {
-        sendJsonRpcError(res, 400, -32000, "No valid MCP session");
+        const statelessServer = createMcpServer(
+          config,
+          workspaces,
+          reviewCheckpoints,
+          processSessions,
+          localAgentProviders,
+          incomingArtifactAdapters,
+        );
+        logEvent(config.logging, "warn", "mcp_sessionless_request_compat", {
+          requestId,
+          method: req.method,
+          rpcMethod: typeof req.body?.method === "string" ? req.body.method : "unknown",
+          ...requestLogFields(req, config),
+        });
+        await handleStatelessMcpRequest(statelessServer, req, res);
         return;
       }
 
@@ -1925,6 +1952,36 @@ export function createServer(
       return closePromise;
     },
   };
+}
+
+export function classifyMcpRequestMode(
+  sessionId: string | undefined,
+  initializeRequest: boolean,
+): "existing" | "initialize" | "stateless" {
+  if (sessionId) return "existing";
+  if (initializeRequest) return "initialize";
+  return "stateless";
+}
+
+export async function handleStatelessMcpRequest(
+  server: McpServer,
+  req: Request,
+  res: Response,
+): Promise<void> {
+  const transport = new StreamableHTTPServerTransport({
+    sessionIdGenerator: undefined,
+  });
+  await server.connect(transport);
+  let closed = false;
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    void transport.close();
+    void server.close();
+  };
+  res.once("finish", close);
+  res.once("close", close);
+  await transport.handleRequest(req, res, req.body);
 }
 
 async function isMainModule(): Promise<boolean> {
