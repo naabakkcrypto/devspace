@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -54,6 +55,13 @@ test("open_workspace keeps lifecycle flags out of model output and preserves com
   assert.equal(catalogOnlyAgent?.providerAvailable, false);
   assert.match(String(catalogOnlyAgent?.providerUnavailableReason), /Codex-only|catalog-only/);
   assert.ok(Array.isArray(firstStructured.skillDiagnostics));
+  const contextReceipt = firstStructured.contextReceipt as Record<string, unknown>;
+  assert.equal(contextReceipt.status, "ready");
+  assert.match(String(contextReceipt.aggregateSha256), /^[a-f0-9]{64}$/);
+  assert.equal(
+    (contextReceipt.capabilities as Record<string, unknown>).nativeMcpRoutesExposed,
+    false,
+  );
   assert.equal("workspaceReused" in firstStructured, false);
   assert.equal("includeBootstrapContext" in firstStructured, false);
 
@@ -186,6 +194,29 @@ test("checkout reuse and context suppression survive a registry restart", async 
   }
 });
 
+test("reopening a stale conversation refreshes its full context before tools resume", async (t) => {
+  const context = await fixture(t);
+  const first = await callOpen(context.client, context.project, "chat-stale");
+  const workspaceId = String(structuredContent(first).workspaceId);
+  await writeFile(join(context.config.agentDir, "AGENTS.md"), "changed global instructions\n");
+
+  const stale = await context.client.callTool({
+    name: "read",
+    arguments: { workspaceId, path: "AGENTS.md" },
+  });
+  assert.equal(stale.isError, true);
+  assert.match(responseText(stale), /Workspace context changed.*open_workspace again/);
+
+  const refreshed = await callOpen(context.client, context.project, "chat-stale");
+  assert.equal(structuredContent(refreshed).workspaceId, workspaceId);
+  assert.ok(Array.isArray(structuredContent(refreshed).agentsFiles));
+  assert.match(responseText(refreshed), /Refreshed workspace context/);
+  await context.client.callTool({
+    name: "read",
+    arguments: { workspaceId, path: "AGENTS.md" },
+  });
+});
+
 test("codex mode applies an adaptive tool-efficiency policy", async (t) => {
   const context = await fixture(t, { toolMode: "codex", widgets: "off", subagents: false });
 
@@ -248,10 +279,15 @@ test("disabling subagents preserves the exact Codex inline tool catalog and sche
 
 test("healthz reports the bounded Codex inline-full posture", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "devspace-health-test-"));
+  const agentDir = join(root, ".codex");
+  const globalRules = "required global instructions\n";
+  await mkdir(agentDir, { recursive: true });
+  await writeFile(join(agentDir, "AGENTS.md"), globalRules);
   const config = loadConfig({
     DEVSPACE_CONFIG_DIR: join(root, ".config"),
     DEVSPACE_ALLOWED_ROOTS: root,
-    DEVSPACE_AGENT_DIR: join(root, ".codex"),
+    DEVSPACE_AGENT_DIR: agentDir,
+    DEVSPACE_REQUIRE_GLOBAL_AGENTS: "1",
     DEVSPACE_SKILLS: "1",
     DEVSPACE_SUBAGENTS: "0",
     DEVSPACE_WIDGETS: "off",
@@ -293,8 +329,18 @@ test("healthz reports the bounded Codex inline-full posture", async (t) => {
     subagentsEnabled: false,
     delegationEnabled: false,
     agentProvidersLoaded: 0,
+    globalRulesReady: true,
+    globalRulesRequired: true,
+    globalRulesSha256: createHash("sha256").update(globalRules).digest("hex"),
     inFlightMcpRequests: 0,
   });
+
+  await writeFile(join(agentDir, "AGENTS.md"), "");
+  const failedResponse = await fetch(`http://127.0.0.1:${address.port}/healthz`);
+  assert.equal(failedResponse.status, 503);
+  const failedHealth = await failedResponse.json() as Record<string, unknown>;
+  assert.equal(failedHealth.ok, false);
+  assert.equal(failedHealth.globalRulesReady, false);
 });
 
 test("sessionless tunnel tool calls use the stateless compatibility transport", () => {

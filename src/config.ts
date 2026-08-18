@@ -26,10 +26,12 @@ export interface ServerConfig {
   artifactMaxFileBytes: number;
   skillsEnabled: boolean;
   skillPaths: string[];
+  skillExcludeNames: string[];
   devspaceSkillsDir: string;
   devspaceAgentsDir: string;
   subagents: boolean;
   agentDir: string;
+  requireGlobalAgents: boolean;
   logging: LoggingConfig;
 }
 
@@ -250,6 +252,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     ),
     skillsEnabled: env.DEVSPACE_SKILLS === undefined ? true : parseBoolean(env.DEVSPACE_SKILLS),
     skillPaths: parsePathList(env.DEVSPACE_SKILL_PATHS),
+    skillExcludeNames: parseStringList(env.DEVSPACE_SKILL_EXCLUDE_NAMES, []),
     devspaceSkillsDir: devspaceSkillsDir(env),
     devspaceAgentsDir: devspaceAgentsDir(env),
     subagents:
@@ -257,6 +260,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
         ? files.config.subagents === true
         : parseBoolean(env.DEVSPACE_SUBAGENTS),
     agentDir: resolve(expandHomePath(env.DEVSPACE_AGENT_DIR ?? files.config.agentDir ?? defaultAgentDir())),
+    requireGlobalAgents: parseBoolean(env.DEVSPACE_REQUIRE_GLOBAL_AGENTS),
     logging: parseLoggingConfig(env),
   };
 }

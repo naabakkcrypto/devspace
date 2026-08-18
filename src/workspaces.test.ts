@@ -162,6 +162,42 @@ test("workspace paths outside the allowed roots are rejected", async (t) => {
   );
 });
 
+test("required global instructions fail closed when missing or empty", async (t) => {
+  const context = await fixture(t);
+  const requiredConfig = loadConfig({
+    DEVSPACE_CONFIG_DIR: join(context.root, ".devspace-required-global"),
+    DEVSPACE_ALLOWED_ROOTS: context.root,
+    DEVSPACE_WORKTREE_ROOT: join(context.root, ".devspace", "required-worktrees"),
+    DEVSPACE_AGENT_DIR: context.agentDir,
+    DEVSPACE_REQUIRE_GLOBAL_AGENTS: "1",
+    DEVSPACE_OAUTH_OWNER_TOKEN: "test-owner-token-that-is-long-enough",
+    PORT: "1",
+  });
+
+  await writeFile(join(context.agentDir, "AGENTS.md"), "");
+  await assert.rejects(
+    () => new WorkspaceRegistry(requiredConfig).openWorkspace(context.root),
+    /Global AGENTS\.md is required and must be non-empty/,
+  );
+  await rm(join(context.agentDir, "AGENTS.md"));
+  await assert.rejects(
+    () => new WorkspaceRegistry(requiredConfig).openWorkspace(context.root),
+    /Global AGENTS\.md is required and must be non-empty/,
+  );
+});
+
+test("a pinned workspace rejects context drift until it is reopened", async (t) => {
+  const context = await fixture(t);
+  const opened = await context.registry.openWorkspace(context.root);
+
+  await context.registry.verifyWorkspaceContext(opened.workspace.id);
+  await writeFile(join(context.agentDir, "AGENTS.md"), "changed global instructions\n");
+  await assert.rejects(
+    () => context.registry.verifyWorkspaceContext(opened.workspace.id),
+    /Workspace context changed.*open_workspace again/,
+  );
+});
+
 test("a symlinked allowed root preserves checkout and worktree path behavior", { skip: platform() === "win32" }, async (t) => {
   const context = await fixture(t);
   const aliasRoot = join(context.root, "alias-root");

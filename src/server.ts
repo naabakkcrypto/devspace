@@ -24,6 +24,11 @@ import {
 } from "./artifact-tools.js";
 import { loadConfig, type ServerConfig, type WidgetMode } from "./config.js";
 import {
+  compactContextReceipt,
+  fingerprintWorkspaceContext,
+  inspectGlobalRules,
+} from "./context-integrity.js";
+import {
   createOpenAIIncomingArtifactAdapter,
   type IncomingArtifactAdapter,
 } from "./incoming-artifacts.js";
@@ -608,7 +613,7 @@ function registerCodexProcessTools(
     },
     async ({ workspaceId, cmd, tty, columns, rows, workingDirectory, yieldTimeMs, maxOutputTokens }) => {
       const startedAt = performance.now();
-      const workspace = workspaces.getWorkspace(workspaceId);
+      const workspace = await workspaces.verifyWorkspaceContext(workspaceId);
       const cwd = workspaces.resolveWorkingDirectory(workspace, workingDirectory);
       const snapshot = await processSessions.start({
         workspaceId,
@@ -678,6 +683,8 @@ function registerCodexProcessTools(
     },
     async ({ workspaceId, sessionId, chars, columns, rows, yieldTimeMs, maxOutputTokens }) => {
       const startedAt = performance.now();
+      // Keep process control available even if context drifted so callers can
+      // poll or terminate an already-running command before reopening.
       workspaces.getWorkspace(workspaceId);
       const snapshot = await processSessions.write({
         workspaceId,
@@ -804,6 +811,7 @@ export function createMcpServer(
         agentProviders: z.array(workspaceLocalAgentProviderOutputSchema).optional(),
         agents: z.array(workspaceLocalAgentOutputSchema).optional(),
         skillDiagnostics: z.array(z.unknown()).optional(),
+        contextReceipt: z.unknown(),
         instruction: z.string(),
       },
       ...toolWidgetDescriptorMeta(config, "workspace"),
@@ -817,10 +825,19 @@ export function createMcpServer(
         availableAgentsFiles,
         workspaceReused,
         includeBootstrapContext,
+        contextRefreshed,
       } = await workspaces.openWorkspace(
         { path, mode, baseRef },
         { conversationScopeId: openAiConversationScopeId(_meta) },
       );
+      const contextReceipt = compactContextReceipt(await fingerprintWorkspaceContext({
+        workspace,
+        agentsFiles,
+        availableAgentsFiles,
+        workspaceReused,
+        includeBootstrapContext,
+        contextRefreshed,
+      }, config));
       if (config.widgets === "changes") {
         await reviewCheckpoints.initializeWorkspace({
           workspaceId: workspace.id,
@@ -862,7 +879,9 @@ export function createMcpServer(
       const cardInstruction = config.skillsEnabled
         ? "Use this workspaceId for subsequent work in this project. Keep reusing it while working in this project. Follow loaded agentsFiles instructions. Before working under a path listed in availableAgentsFiles, read that instruction file. When a task matches an available skill in skills, read its path before proceeding."
         : "Use this workspaceId for subsequent work in this project. Keep reusing it while working in this project. Follow loaded agentsFiles instructions. Before working under a path listed in availableAgentsFiles, read that instruction file.";
-      const instruction = workspaceReused
+      const instruction = contextRefreshed
+        ? "Workspace context changed and was refreshed. Follow the returned instructions, skills, diagnostics, and context receipt before continuing with this workspaceId."
+        : workspaceReused
         ? [
             `Workspace already open as ${workspace.id}.`,
             "Continue with this workspaceId.",
@@ -875,7 +894,9 @@ export function createMcpServer(
         {
           type: "text" as const,
           text: [
-            workspaceReused
+            contextRefreshed
+              ? `Refreshed workspace context for ${workspace.id}.`
+              : workspaceReused
               ? `Workspace already open as ${workspace.id}.`
               : workspace.mode === "worktree"
                 ? `Opened isolated worktree workspace ${workspace.id}.`
@@ -957,6 +978,7 @@ export function createMcpServer(
                 skillDiagnostics: workspace.skillDiagnostics,
               }
             : {}),
+          contextReceipt,
           instruction,
         },
       };
@@ -1008,7 +1030,7 @@ export function createMcpServer(
     },
     async ({ workspaceId, ...input }) => {
       const startedAt = performance.now();
-      const workspace = workspaces.getWorkspace(workspaceId);
+      const workspace = await workspaces.verifyWorkspaceContext(workspaceId);
       const readPath = workspaces.resolveReadPath(workspace, input.path);
       const response = await readFileTool(
         { ...input, path: readPath.absolutePath },
@@ -1083,7 +1105,7 @@ export function createMcpServer(
     },
     async ({ workspaceId, ...input }) => {
       const startedAt = performance.now();
-      const workspace = workspaces.getWorkspace(workspaceId);
+      const workspace = await workspaces.verifyWorkspaceContext(workspaceId);
       workspaces.resolvePath(workspace, input.path);
       const response = await writeFileTool(input, {
         cwd: workspace.root,
@@ -1170,7 +1192,7 @@ export function createMcpServer(
     },
     async ({ workspaceId, ...input }) => {
       const startedAt = performance.now();
-      const workspace = workspaces.getWorkspace(workspaceId);
+      const workspace = await workspaces.verifyWorkspaceContext(workspaceId);
       workspaces.resolvePath(workspace, input.path);
       const response = await editFileTool(input, {
         cwd: workspace.root,
@@ -1258,7 +1280,7 @@ export function createMcpServer(
       },
       async ({ workspaceId, patch }) => {
         const startedAt = performance.now();
-        const workspace = workspaces.getWorkspace(workspaceId);
+        const workspace = await workspaces.verifyWorkspaceContext(workspaceId);
         const applied = await applyPatch(workspace.root, patch);
         const paths = applied.files.map((file) => file.path).join(", ");
         const result = `Applied patch to ${applied.files.length} file(s): ${paths}`;
@@ -1320,7 +1342,7 @@ export function createMcpServer(
       },
       async ({ workspaceId }) => {
         const startedAt = performance.now();
-        const workspace = workspaces.getWorkspace(workspaceId);
+        const workspace = await workspaces.verifyWorkspaceContext(workspaceId);
         const review = await reviewCheckpoints.reviewChanges({
           workspaceId,
           root: workspace.root,
@@ -1383,7 +1405,7 @@ export function createMcpServer(
       },
       async ({ workspaceId, ...input }) => {
         const startedAt = performance.now();
-        const workspace = workspaces.getWorkspace(workspaceId);
+        const workspace = await workspaces.verifyWorkspaceContext(workspaceId);
         if (input.path) workspaces.resolvePath(workspace, input.path);
         const response = await grepFilesTool(input, {
           cwd: workspace.root,
@@ -1453,7 +1475,7 @@ export function createMcpServer(
       },
       async ({ workspaceId, ...input }) => {
         const startedAt = performance.now();
-        const workspace = workspaces.getWorkspace(workspaceId);
+        const workspace = await workspaces.verifyWorkspaceContext(workspaceId);
         if (input.path) workspaces.resolvePath(workspace, input.path);
         const response = await findFilesTool(input, {
           cwd: workspace.root,
@@ -1523,7 +1545,7 @@ export function createMcpServer(
       },
       async ({ workspaceId, ...input }) => {
         const startedAt = performance.now();
-        const workspace = workspaces.getWorkspace(workspaceId);
+        const workspace = await workspaces.verifyWorkspaceContext(workspaceId);
         workspaces.resolvePath(workspace, input.path);
         const response = await listDirectoryTool(input, {
           cwd: workspace.root,
@@ -1604,7 +1626,7 @@ export function createMcpServer(
     },
     async ({ workspaceId, workingDirectory, ...input }) => {
       const startedAt = performance.now();
-      const workspace = workspaces.getWorkspace(workspaceId);
+      const workspace = await workspaces.verifyWorkspaceContext(workspaceId);
       const cwd = workspaces.resolveWorkingDirectory(
         workspace,
         workingDirectory,
@@ -1800,13 +1822,16 @@ export function createServer(
     }),
   );
 
-  app.get("/healthz", (_req, res) => {
+  app.get("/healthz", async (_req, res) => {
+    const globalRules = await inspectGlobalRules(config);
     const inlineFull = config.toolMode === "codex"
       && config.widgets === "off"
       && config.skillsEnabled
-      && !config.subagents;
-    res.json({
-      ok: true,
+      && !config.subagents
+      && (!config.requireGlobalAgents || globalRules.ready);
+    const healthReady = !config.requireGlobalAgents || globalRules.ready;
+    res.status(healthReady ? 200 : 503).json({
+      ok: healthReady,
       name: "devspace",
       version: DEVSPACE_VERSION,
       contextProfile: inlineFull ? "codex-inline-full" : "custom",
@@ -1816,6 +1841,9 @@ export function createServer(
       subagentsEnabled: config.subagents,
       delegationEnabled: config.subagents,
       agentProvidersLoaded: localAgentProviders.length,
+      globalRulesReady: globalRules.ready,
+      globalRulesRequired: globalRules.required,
+      globalRulesSha256: globalRules.sha256,
       inFlightMcpRequests,
     });
   });

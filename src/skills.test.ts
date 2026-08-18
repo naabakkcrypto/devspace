@@ -195,6 +195,18 @@ try {
     false,
   );
 
+  const routedConfig = loadConfig({
+    DEVSPACE_ALLOWED_ROOTS: projectRoot,
+    DEVSPACE_AGENT_DIR: agentDir,
+    DEVSPACE_SKILL_PATHS: explicitSkills,
+    DEVSPACE_SKILL_EXCLUDE_NAMES: "duplicate-skill,hidden-skill",
+    DEVSPACE_OAUTH_OWNER_TOKEN: "test-owner-token-that-is-long-enough",
+    PORT: "1",
+  });
+  const routed = loadWorkspaceSkills(routedConfig, projectRoot);
+  assert.equal(routed.skills.some((skill) => skill.name === "duplicate-skill"), false);
+  assert.equal(routed.skills.some((skill) => skill.name === "hidden-skill"), false);
+
   const experimentalConfig = loadConfig({
     DEVSPACE_ALLOWED_ROOTS: projectRoot,
     DEVSPACE_AGENT_DIR: agentDir,

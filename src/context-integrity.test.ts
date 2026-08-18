@@ -52,6 +52,14 @@ test("disabling subagents preserves all inline context except delegation-only da
   assert.equal(disabledFingerprint.skills.some((skill) => skill.name === "ordinary-skill"), true);
   assert.equal(disabledFingerprint.subagentProfiles, 0);
   assert.equal(disabledFingerprint.posture.subagentsEnabled, false);
+  assert.equal(disabledFingerprint.status, "ready");
+  assert.match(disabledFingerprint.globalRules.sha256 ?? "", /^[a-f0-9]{64}$/);
+  assert.equal(disabledFingerprint.globalRules.present, true);
+  assert.equal(disabledFingerprint.globalRules.required, false);
+  assert.equal(disabledFingerprint.capabilities.skillInstructionsAvailable, true);
+  assert.equal(disabledFingerprint.capabilities.localShellAvailable, true);
+  assert.equal(disabledFingerprint.capabilities.nativeMcpRoutesExposed, false);
+  assert.equal(disabledFingerprint.capabilities.naabakkSkillCount, 0);
   assert.match(disabledFingerprint.aggregateSha256, /^[a-f0-9]{64}$/);
   assert.equal(JSON.stringify(disabledFingerprint).includes(root), false);
   assert.equal(JSON.stringify(disabledFingerprint).includes("global instructions"), false);

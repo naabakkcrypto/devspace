@@ -23,6 +23,13 @@ assert.equal(loadConfig({ ...baseEnv, DEVSPACE_TOOL_MODE: "codex" }).toolMode, "
 assert.equal(loadConfig({ ...baseEnv, DEVSPACE_MINIMAL_TOOLS: "0" }).toolMode, "full");
 assert.equal(loadConfig({ ...baseEnv, DEVSPACE_MINIMAL_TOOLS: "1" }).toolMode, "minimal");
 assert.equal(loadConfig(baseEnv).skillsEnabled, true);
+assert.deepEqual(loadConfig(baseEnv).skillExcludeNames, []);
+assert.deepEqual(
+  loadConfig({ ...baseEnv, DEVSPACE_SKILL_EXCLUDE_NAMES: "using-superpowers, writing-plans" }).skillExcludeNames,
+  ["using-superpowers", "writing-plans"],
+);
+assert.equal(loadConfig(baseEnv).requireGlobalAgents, false);
+assert.equal(loadConfig({ ...baseEnv, DEVSPACE_REQUIRE_GLOBAL_AGENTS: "1" }).requireGlobalAgents, true);
 assert.equal(loadConfig(baseEnv).devspaceSkillsDir, join(emptyConfigDir, "skills"));
 assert.equal(loadConfig(baseEnv).devspaceAgentsDir, join(emptyConfigDir, "agents"));
 assert.equal(loadConfig(baseEnv).subagents, false);

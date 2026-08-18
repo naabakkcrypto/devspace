@@ -71,13 +71,17 @@ export function loadWorkspaceSkills(config: ServerConfig, cwd: string): LoadedSk
     includeDefaults: false,
   });
 
-  if (config.subagents) return result;
+  const excludedNames = new Set(config.skillExcludeNames);
+  if (config.subagents && excludedNames.size === 0) return result;
+
+  const skillIsExcluded = (name: string) =>
+    excludedNames.has(name) || (!config.subagents && name === SUBAGENT_DELEGATION_NAME);
 
   return {
-    skills: result.skills.filter((skill) => skill.name !== SUBAGENT_DELEGATION_NAME),
+    skills: result.skills.filter((skill) => !skillIsExcluded(skill.name)),
     diagnostics: result.diagnostics.filter((diagnostic) => {
       const collision = diagnostic.collision;
-      return !(collision?.resourceType === "skill" && collision.name === SUBAGENT_DELEGATION_NAME);
+      return !(collision?.resourceType === "skill" && skillIsExcluded(collision.name));
     }),
   };
 }

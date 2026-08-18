@@ -9,6 +9,7 @@ import { mkdir, opendir, readFile, realpath, stat } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { loadProjectContextFiles } from "@earendil-works/pi-coding-agent";
 import type { ServerConfig } from "./config.js";
+import { fingerprintWorkspaceContext } from "./context-integrity.js";
 import { createManagedWorktree } from "./git-worktrees.js";
 import {
   AccessDeniedError,
@@ -57,6 +58,8 @@ export interface Workspace {
   agentProfiles: LocalAgentProfile[];
   capabilityToken: string;
   activatedSkillDirs: Set<string>;
+  contextFingerprint?: string;
+  availableAgentsFilesSnapshot?: AvailableAgentsFile[];
 }
 
 export interface WorkspaceContext {
@@ -65,6 +68,7 @@ export interface WorkspaceContext {
   availableAgentsFiles: AvailableAgentsFile[];
   workspaceReused: boolean;
   includeBootstrapContext: boolean;
+  contextRefreshed: boolean;
 }
 
 export interface WorkspaceReadPath {
@@ -169,10 +173,10 @@ export class WorkspaceRegistry {
       if (reusableWorkspace) {
         const context = await this.reusedWorkspaceContext(reusableWorkspace);
         this.store?.touchConversationBinding(conversationScopeId, targetKey);
-        return {
-          ...context,
-          includeBootstrapContext: false,
-        };
+      return {
+        ...context,
+        includeBootstrapContext: context.contextRefreshed,
+      };
       }
 
       this.workspaces.delete(binding.workspaceSessionId);
@@ -230,17 +234,62 @@ export class WorkspaceRegistry {
   }
 
   private async reusedWorkspaceContext(workspace: Workspace): Promise<WorkspaceContext> {
+    const previousFingerprint = workspace.contextFingerprint;
     workspace.agentProfiles = await loadLocalAgentProfiles(this.config, workspace.root);
     const agentsFiles = await this.loadInitialAgentsFiles(workspace.root);
     const availableAgentsFiles = await this.findAvailableAgentsFiles(workspace.root, agentsFiles);
+    workspace.availableAgentsFilesSnapshot = availableAgentsFiles;
 
-    return {
+    const context = {
       workspace,
       agentsFiles,
       availableAgentsFiles,
       workspaceReused: true,
       includeBootstrapContext: true,
+      contextRefreshed: false,
     };
+    const nextFingerprint = (await fingerprintWorkspaceContext(context, this.config)).aggregateSha256;
+    workspace.contextFingerprint = nextFingerprint;
+    const contextRefreshed = previousFingerprint !== undefined && previousFingerprint !== nextFingerprint;
+    return {
+      ...context,
+      includeBootstrapContext: contextRefreshed,
+      contextRefreshed,
+    };
+  }
+
+  async verifyWorkspaceContext(workspaceId: string): Promise<Workspace> {
+    const workspace = this.getWorkspace(workspaceId);
+    const expected = workspace.contextFingerprint;
+    if (!expected) {
+      throw new Error("Workspace context is not pinned. Call open_workspace again before continuing.");
+    }
+
+    const freshSkills = this.loadSkillsForWorkspace(workspace.root);
+    const currentWorkspace: Workspace = {
+      ...workspace,
+      ...freshSkills,
+      agentProfiles: await loadLocalAgentProfiles(this.config, workspace.root),
+    };
+    const agentsFiles = await this.loadInitialAgentsFiles(workspace.root);
+    const availableAgentsFiles = workspace.availableAgentsFilesSnapshot;
+    if (!availableAgentsFiles) {
+      throw new Error("Workspace context inventory is not pinned. Call open_workspace again before continuing.");
+    }
+    const current = await fingerprintWorkspaceContext({
+      workspace: currentWorkspace,
+      agentsFiles,
+      availableAgentsFiles,
+      workspaceReused: true,
+      includeBootstrapContext: false,
+      contextRefreshed: false,
+    }, this.config);
+    if (current.aggregateSha256 !== expected) {
+      throw new Error(
+        `Workspace context changed after it was opened. Call open_workspace again before continuing (expected ${expected}, current ${current.aggregateSha256}).`,
+      );
+    }
+    return workspace;
   }
 
   getWorkspace(workspaceId: string): Workspace {
@@ -384,14 +433,18 @@ export class WorkspaceRegistry {
     this.workspaces.set(workspace.id, workspace);
     const agentsFiles = await this.loadInitialAgentsFiles(workspace.root);
     const availableAgentsFiles = await this.findAvailableAgentsFiles(workspace.root, agentsFiles);
+    workspace.availableAgentsFilesSnapshot = availableAgentsFiles;
 
-    return {
+    const context = {
       workspace,
       agentsFiles,
       availableAgentsFiles,
       workspaceReused: false,
       includeBootstrapContext: true,
+      contextRefreshed: false,
     };
+    workspace.contextFingerprint = (await fingerprintWorkspaceContext(context, this.config)).aggregateSha256;
+    return context;
   }
 
   private loadSkillsForWorkspace(root: string): Pick<Workspace, "skills" | "skillDiagnostics"> {
@@ -437,6 +490,14 @@ export class WorkspaceRegistry {
       });
     }
 
+    if (this.config.requireGlobalAgents) {
+      const globalAgentsPath = resolve(agentDir, "AGENTS.md");
+      const globalAgents = loadedFiles.find((file) => pathsEqual(file.path, globalAgentsPath));
+      if (!globalAgents || globalAgents.content.trim().length === 0) {
+        throw new Error("Global AGENTS.md is required and must be non-empty in codex-inline-full mode.");
+      }
+    }
+
     return loadedFiles;
   }
 
@@ -464,6 +525,14 @@ export class WorkspaceRegistry {
 
     return discovered.sort((a, b) => a.path.localeCompare(b.path));
   }
+}
+
+function pathsEqual(left: string, right: string): boolean {
+  const normalizedLeft = resolve(left);
+  const normalizedRight = resolve(right);
+  return process.platform === "win32"
+    ? normalizedLeft.toLowerCase() === normalizedRight.toLowerCase()
+    : normalizedLeft === normalizedRight;
 }
 
 async function canonicalPath(path: string): Promise<string> {
