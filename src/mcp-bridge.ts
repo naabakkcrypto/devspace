@@ -8,6 +8,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { UnauthorizedError, type OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
 import { StdioClientTransport, getDefaultEnvironment } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import safeRegex from "safe-regex2";
 import { parse as parseToml } from "smol-toml";
 import * as z from "zod/v4";
 
@@ -315,7 +316,13 @@ function jsonSchemaToZod(
       let string = z.string();
       if (typeof schema.minLength === "number") string = string.min(schema.minLength);
       if (typeof schema.maxLength === "number") string = string.max(schema.maxLength);
-      if (typeof schema.pattern === "string") string = string.regex(new RegExp(schema.pattern));
+      if (typeof schema.pattern === "string") {
+        if (!safeRegex(schema.pattern)) {
+          throw new Error("Unsafe MCP bridge JSON schema pattern");
+        }
+        // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp
+        string = string.regex(new RegExp(schema.pattern));
+      }
       output = string;
       break;
     }

@@ -291,6 +291,33 @@ test("tool schema projection adds workspaceId and preserves required, enum, arra
   assert.throws(() => bridgeToolInputSchema({ type: "string" }), /object/i);
 });
 
+test("tool schema projection fails closed on ReDoS-prone upstream patterns", () => {
+  assert.throws(
+    () =>
+      bridgeToolInputSchema({
+        type: "object",
+        properties: {
+          value: { type: "string", pattern: "^(a+)+$" },
+        },
+        required: ["value"],
+      }),
+    /unsafe MCP bridge JSON schema pattern/i,
+  );
+
+  const safe = bridgeToolInputSchema({
+    type: "object",
+    properties: {
+      value: { type: "string", pattern: "^[a-z0-9-]+$" },
+    },
+    required: ["value"],
+  });
+  assert.deepEqual(safe.parse({ workspaceId: "w1", value: "safe-slug-1" }), {
+    workspaceId: "w1",
+    value: "safe-slug-1",
+  });
+  assert.throws(() => safe.parse({ workspaceId: "w1", value: "INVALID!" }));
+});
+
 test("catalog persistence is atomic, validated, and round-trips only its public receipt", async () => {
   const directory = await mkdtemp(join(tmpdir(), "devspace-mcp-catalog-"));
   try {
