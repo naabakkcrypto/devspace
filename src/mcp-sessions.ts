@@ -2,6 +2,29 @@ export interface ClosableMcpTransport {
   close(): Promise<void>;
 }
 
+export interface ManagedMcpSession<TTransport extends ClosableMcpTransport>
+  extends ClosableMcpTransport {
+  transport: TTransport;
+}
+
+export function createMcpSessionResource<
+  TTransport extends ClosableMcpTransport,
+  TServer extends ClosableMcpTransport,
+>(transport: TTransport, server: TServer): ManagedMcpSession<TTransport> {
+  let closePromise: Promise<void> | undefined;
+  return {
+    transport,
+    close() {
+      closePromise ??= Promise.resolve().then(async () => {
+        const results = await Promise.allSettled([server.close(), transport.close()]);
+        const failure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
+        if (failure) throw failure.reason;
+      });
+      return closePromise;
+    },
+  };
+}
+
 export interface McpSessionCloseResult {
   sessionId: string;
   error?: unknown;
@@ -59,6 +82,23 @@ export class McpSessionRegistry<TTransport extends ClosableMcpTransport> {
     }
 
     return closeSessions(idleSessions);
+  }
+
+  async closeOverflow(maxRetained: number): Promise<McpSessionCloseResult[]> {
+    if (!Number.isInteger(maxRetained) || maxRetained < 0) {
+      throw new Error("MCP session retention limit must be a non-negative integer");
+    }
+    const overflow = Math.max(0, this.sessions.size - maxRetained);
+    if (overflow === 0) return [];
+    const oldest = Array.from(this.sessions, ([sessionId, entry]) => ({
+      sessionId,
+      transport: entry.transport,
+      lastActivityAt: entry.lastActivityAt,
+    }))
+      .sort((left, right) => left.lastActivityAt - right.lastActivityAt)
+      .slice(0, overflow);
+    for (const { sessionId } of oldest) this.sessions.delete(sessionId);
+    return closeSessions(oldest);
   }
 
   async closeAll(): Promise<McpSessionCloseResult[]> {

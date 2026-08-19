@@ -364,7 +364,13 @@ test("healthz reports the bounded Codex inline-full posture", async (t) => {
   const packageMetadata = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")) as {
     version: string;
   };
-  assert.deepEqual(await response.json(), {
+  const health = await response.json() as Record<string, unknown>;
+  for (const field of ["processRssBytes", "heapUsedBytes", "heapTotalBytes", "externalBytes", "heapSizeLimitBytes"]) {
+    assert.equal(typeof health[field], "number");
+    assert.ok((health[field] as number) > 0);
+    delete health[field];
+  }
+  assert.deepEqual(health, {
     ok: true,
     name: "devspace",
     version: packageMetadata.version,
@@ -381,6 +387,7 @@ test("healthz reports the bounded Codex inline-full posture", async (t) => {
     mcpBridgeReady: false,
     mcpBridgeServers: 0,
     mcpBridgeTools: 0,
+    mcpBridgeConnections: 0,
     nativeMcpRoutesExposed: false,
     inFlightMcpRequests: 0,
   });

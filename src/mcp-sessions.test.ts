@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { McpSessionRegistry } from "./mcp-sessions.js";
+import { createMcpSessionResource, McpSessionRegistry } from "./mcp-sessions.js";
 
 interface FakeTransport {
   closeCalls: number;
@@ -84,3 +84,44 @@ finishDelayedClose?.();
 await delayedClose;
 assert.equal(delayedCloseResolved, true);
 assert.equal(registry.size, 0);
+
+const bounded = new McpSessionRegistry<FakeTransport>({ now: () => now });
+const oldest = createTransport();
+const middle = createTransport();
+const newest = createTransport();
+now = 1;
+bounded.register("oldest", oldest);
+now = 2;
+bounded.register("middle", middle);
+now = 3;
+bounded.register("newest", newest);
+const overflowResults = await bounded.closeOverflow(2);
+assert.deepEqual(overflowResults, [{ sessionId: "oldest" }]);
+assert.equal(oldest.closeCalls, 1);
+assert.equal(middle.closeCalls, 0);
+assert.equal(newest.closeCalls, 0);
+assert.equal(bounded.size, 2);
+
+const managedTransport = createTransport();
+const managedServer = createTransport();
+const managed = createMcpSessionResource(managedTransport, managedServer);
+assert.equal(managed.transport, managedTransport);
+await managed.close();
+await managed.close();
+assert.equal(managedTransport.closeCalls, 1);
+assert.equal(managedServer.closeCalls, 1);
+
+let reentrantClose: (() => Promise<void>) | undefined;
+const reentrantTransport: FakeTransport = {
+  closeCalls: 0,
+  async close() {
+    this.closeCalls += 1;
+    void reentrantClose?.();
+  },
+};
+const reentrantServer = createTransport();
+const reentrantManaged = createMcpSessionResource(reentrantTransport, reentrantServer);
+reentrantClose = () => reentrantManaged.close();
+await reentrantManaged.close();
+assert.equal(reentrantTransport.closeCalls, 1);
+assert.equal(reentrantServer.closeCalls, 1);

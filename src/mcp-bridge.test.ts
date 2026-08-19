@@ -384,6 +384,84 @@ test("manager opens routes lazily per workspace, activates Serena scope, and clo
   assert.equal(closes, 2);
 });
 
+test("manager evicts idle upstream connections and reconnects without reducing the MCP surface", async () => {
+  let now = 0;
+  const runtime = new McpBridgeRuntimeProfile(
+    {
+      name: "max",
+      configSha256: "a".repeat(64),
+      stateConfigDrift: false,
+      servers: [{ name: "serena", transport: "stdio" }],
+    },
+    new Map([
+      ["serena", { transport: "stdio", command: "python", args: [], env: {}, startupTimeoutMs: 1_000 }],
+    ]),
+  );
+  let connections = 0;
+  let closes = 0;
+  const calls: string[] = [];
+  const catalog = {
+    schemaVersion: 1 as const,
+    profile: "max",
+    configSha256: "a".repeat(64),
+    stateConfigDrift: false,
+    aggregateSha256: "",
+    servers: [{
+      name: "serena",
+      transport: "stdio" as const,
+      tools: [{ name: "find_symbol", inputSchema: { type: "object" } }],
+    }],
+  };
+  catalog.aggregateSha256 = catalogAggregateSha256(
+    catalog.profile,
+    catalog.configSha256,
+    catalog.stateConfigDrift,
+    catalog.servers,
+  );
+  const manager = new McpBridgeManager(runtime, catalog, async () => {
+    const identity = ++connections;
+    return {
+      async listTools() { return { tools: [] }; },
+      async callTool(name: string) {
+        calls.push(`${identity}:${name}`);
+        return { content: [{ type: "text", text: "ok" }] };
+      },
+      async close() { closes += 1; },
+    };
+  }, { now: () => now });
+
+  const input = {
+    workspaceId: "workspace-1",
+    serverName: "serena",
+    toolName: "find_symbol",
+    argumentsValue: { name_path_pattern: "main" },
+    scope: { workspaceRoot: "C:\\A - PROJETS\\Example" },
+  };
+  await manager.call(input);
+  assert.equal(manager.connectionCount, 1);
+
+  now = 299_999;
+  assert.equal(await manager.closeIdle(300_000), 0);
+  assert.equal(closes, 0);
+
+  now = 300_000;
+  assert.equal(await manager.closeIdle(300_000), 1);
+  assert.equal(closes, 1);
+  assert.equal(manager.connectionCount, 0);
+
+  await manager.call(input);
+  assert.equal(connections, 2);
+  assert.equal(manager.connectionCount, 1);
+  assert.deepEqual(calls, [
+    "1:activate_project",
+    "1:find_symbol",
+    "2:activate_project",
+    "2:find_symbol",
+  ]);
+  assert.equal(catalog.servers[0]?.tools.length, 1);
+  await manager.close();
+});
+
 test("manager rejects stale catalogs and tools outside the discovered surface", async () => {
   const runtime = new McpBridgeRuntimeProfile({
     name: "max",

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { access, realpath } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
+import { getHeapStatistics } from "node:v8";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
 import { mcpAuthRouter, getOAuthProtectedResourceMetadataUrl } from "@modelcontextprotocol/sdk/server/auth/router.js";
@@ -57,8 +58,10 @@ import {
 } from "./mcp-bridge.js";
 import { registerMcpBridgeTools, type McpBridgeToolRuntime } from "./mcp-bridge-tools.js";
 import {
+  createMcpSessionResource,
   McpSessionRegistry,
   type McpSessionCloseResult,
+  type ManagedMcpSession,
 } from "./mcp-sessions.js";
 import { ProcessSessionManager, type ProcessSnapshot } from "./process-sessions.js";
 import { DEVSPACE_VERSION } from "./package-version.js";
@@ -80,6 +83,9 @@ type Transport = StreamableHTTPServerTransport;
 // session retention so abandoned MCP servers do not accumulate for the life of the process.
 const MCP_SESSION_IDLE_TIMEOUT_MS = 24 * 60 * 60 * 1_000;
 const MCP_SESSION_CLEANUP_INTERVAL_MS = 5 * 60 * 1_000;
+const MCP_SESSION_MAX_RETAINED = 128;
+const MCP_BRIDGE_CONNECTION_IDLE_TIMEOUT_MS = 5 * 60 * 1_000;
+const MCP_BRIDGE_CONNECTION_CLEANUP_INTERVAL_MS = 60 * 1_000;
 const WORKSPACE_APP_URI = "ui://devspace/workspace-app.html";
 const WORKSPACE_APP_MANIFEST_ENTRY = "workspace-app.html";
 const WRITE_TOOL_ANNOTATIONS = {
@@ -1730,7 +1736,7 @@ export function createServer(
     res.setHeader("Cache-Control", "no-store");
     next();
   });
-  const transports = new McpSessionRegistry<Transport>();
+  const transports = new McpSessionRegistry<ManagedMcpSession<Transport>>();
   const mcpUrl = new URL("/mcp", config.publicBaseUrl);
   const resourceServerUrl = resourceUrlFromServerUrl(mcpUrl);
   const oauthProvider = new SingleUserOAuthProvider(config.oauth, mcpUrl, config.stateDir);
@@ -1793,6 +1799,21 @@ export function createServer(
       .then((results) => logSessionCloseResults("idle_timeout", results));
   }, MCP_SESSION_CLEANUP_INTERVAL_MS);
   sessionCleanupTimer.unref();
+  const bridgeCleanupTimer = setInterval(() => {
+    if (!mcpBridge) return;
+    void mcpBridge.manager.closeIdle(MCP_BRIDGE_CONNECTION_IDLE_TIMEOUT_MS)
+      .then((closed) => {
+        if (closed > 0) {
+          logEvent(config.logging, "info", "mcp_bridge_idle_connections_closed", { closed });
+        }
+      })
+      .catch((error) => {
+        logEvent(config.logging, "warn", "mcp_bridge_idle_cleanup_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+  }, MCP_BRIDGE_CONNECTION_CLEANUP_INTERVAL_MS);
+  bridgeCleanupTimer.unref();
 
   if (config.logging.trustProxy) {
     app.set("trust proxy", "loopback");
@@ -1855,6 +1876,8 @@ export function createServer(
       && !config.subagents
       && (!config.requireGlobalAgents || globalRules.ready);
     const healthReady = !config.requireGlobalAgents || globalRules.ready;
+    const memory = process.memoryUsage();
+    const heapStatistics = getHeapStatistics();
     res.status(healthReady ? 200 : 503).json({
       ok: healthReady,
       name: "devspace",
@@ -1873,9 +1896,15 @@ export function createServer(
       mcpBridgeProfile: mcpBridge?.catalog.profile,
       mcpBridgeServers: mcpBridge?.catalog.servers.length ?? 0,
       mcpBridgeTools: mcpBridge?.catalog.servers.reduce((count, entry) => count + entry.tools.length, 0) ?? 0,
+      mcpBridgeConnections: mcpBridge?.manager.connectionCount ?? 0,
       mcpBridgeAggregateSha256: mcpBridge?.catalog.aggregateSha256,
       nativeMcpRoutesExposed: mcpBridge !== undefined,
       inFlightMcpRequests,
+      processRssBytes: memory.rss,
+      heapUsedBytes: memory.heapUsed,
+      heapTotalBytes: memory.heapTotal,
+      externalBytes: memory.external,
+      heapSizeLimitBytes: heapStatistics.heap_size_limit,
     });
   });
   app.all("/mcp", async (req, res) => {
@@ -1926,16 +1955,22 @@ export function createServer(
 
       const requestMode = classifyMcpRequestMode(sessionId, initializeRequest);
       if (requestMode === "existing") {
-        transport = transports.get(sessionId!);
-        if (!transport) {
+        const session = transports.get(sessionId!);
+        if (!session) {
           sendJsonRpcError(res, 404, -32000, "Unknown MCP session");
           return;
         }
+        transport = session.transport;
       } else if (requestMode === "initialize") {
+        let session: ManagedMcpSession<Transport> | undefined;
         transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
           onsessioninitialized: (newSessionId) => {
-            if (transport) transports.register(newSessionId, transport);
+            if (session) {
+              transports.register(newSessionId, session);
+              void transports.closeOverflow(MCP_SESSION_MAX_RETAINED)
+                .then((results) => logSessionCloseResults("idle_timeout", results));
+            }
             logEvent(config.logging, "info", "mcp_session_created", {
               requestId,
               sessionIdPrefix: sessionIdPrefix(newSessionId),
@@ -1951,6 +1986,7 @@ export function createServer(
               reason: "transport_close",
               sessionIdPrefix: sessionIdPrefix(closedSessionId),
             });
+            void session?.close();
           }
         };
 
@@ -1963,6 +1999,7 @@ export function createServer(
           incomingArtifactAdapters,
           mcpBridge,
         );
+        session = createMcpSessionResource(transport, server);
         await server.connect(transport);
       } else {
         const statelessServer = createMcpServer(
@@ -2004,6 +2041,7 @@ export function createServer(
     close: () => {
       closePromise ??= (async () => {
         clearInterval(sessionCleanupTimer);
+        clearInterval(bridgeCleanupTimer);
         const results = await transports.closeAll();
         logSessionCloseResults("server_shutdown", results);
         processSessions.shutdown();

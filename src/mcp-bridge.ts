@@ -460,6 +460,16 @@ export type McpBridgeConnectorFactory = (
   scopeKey?: string,
 ) => Promise<McpBridgeConnection>;
 
+export interface McpBridgeManagerOptions {
+  now?: () => number;
+}
+
+interface McpBridgeConnectionEntry {
+  connection: Promise<McpBridgeConnection>;
+  lastUsedAt: number;
+  inFlight: number;
+}
+
 const MCP_BRIDGE_TOOL_TIMEOUT_MS = 120_000;
 
 export async function createSdkMcpBridgeConnection(
@@ -609,13 +619,15 @@ export class McpBridgeManager {
   readonly #runtime: McpBridgeRuntimeProfile;
   readonly #catalog: McpBridgeCatalog;
   readonly #connectorFactory: McpBridgeConnectorFactory;
-  readonly #connections = new Map<string, Promise<McpBridgeConnection>>();
+  readonly #connections = new Map<string, McpBridgeConnectionEntry>();
   readonly #serenaActivated = new Set<string>();
+  readonly #now: () => number;
 
   constructor(
     runtime: McpBridgeRuntimeProfile,
     catalog: McpBridgeCatalog,
     connectorFactory: McpBridgeConnectorFactory,
+    options: McpBridgeManagerOptions = {},
   ) {
     if (catalog.schemaVersion !== 1) throw new Error("MCP bridge catalog schema is unsupported");
     if (catalog.profile !== runtime.publicProfile.name) throw new Error("MCP bridge catalog profile is stale");
@@ -637,21 +649,30 @@ export class McpBridgeManager {
     this.#runtime = runtime;
     this.#catalog = catalog;
     this.#connectorFactory = connectorFactory;
+    this.#now = options.now ?? Date.now;
+  }
+
+  get connectionCount(): number {
+    return this.#connections.size;
   }
 
   #connectionKey(workspaceId: string, serverName: string): string {
     return `${workspaceId}\u0000${serverName}`;
   }
 
-  #connection(workspaceId: string, serverName: string, workspaceRoot: string): Promise<McpBridgeConnection> {
+  #connection(workspaceId: string, serverName: string, workspaceRoot: string): McpBridgeConnectionEntry {
     const key = this.#connectionKey(workspaceId, serverName);
-    let connection = this.#connections.get(key);
-    if (!connection) {
-      connection = this.#connectorFactory(serverName, this.#runtime.serverConfig(serverName), workspaceRoot);
-      this.#connections.set(key, connection);
-      void connection.catch(() => this.#connections.delete(key));
+    let entry = this.#connections.get(key);
+    if (!entry) {
+      const connection = this.#connectorFactory(serverName, this.#runtime.serverConfig(serverName), workspaceRoot);
+      entry = { connection, lastUsedAt: this.#now(), inFlight: 0 };
+      this.#connections.set(key, entry);
+      void connection.catch(() => {
+        if (this.#connections.get(key) === entry) this.#connections.delete(key);
+      });
     }
-    return connection;
+    entry.lastUsedAt = this.#now();
+    return entry;
   }
 
   async call(input: McpBridgeCallInput): Promise<Record<string, unknown>> {
@@ -661,25 +682,48 @@ export class McpBridgeManager {
     if (!server.tools.some((tool) => tool.name === input.toolName)) {
       throw new Error(`MCP bridge tool ${input.serverName}.${input.toolName} is not in the active catalog`);
     }
-    const connection = await this.#connection(input.workspaceId, input.serverName, input.scope.workspaceRoot);
-    const scopedArguments = scopeMcpArguments(
-      input.serverName,
-      input.toolName,
-      input.argumentsValue,
-      input.scope,
-    );
     const key = this.#connectionKey(input.workspaceId, input.serverName);
-    if (input.serverName === "serena" && !this.#serenaActivated.has(key)) {
-      if (input.toolName !== "activate_project") {
-        await connection.callTool("activate_project", { project: input.scope.workspaceRoot });
+    const entry = this.#connection(input.workspaceId, input.serverName, input.scope.workspaceRoot);
+    entry.inFlight += 1;
+    try {
+      const connection = await entry.connection;
+      const scopedArguments = scopeMcpArguments(
+        input.serverName,
+        input.toolName,
+        input.argumentsValue,
+        input.scope,
+      );
+      if (input.serverName === "serena" && !this.#serenaActivated.has(key)) {
+        if (input.toolName !== "activate_project") {
+          await connection.callTool("activate_project", { project: input.scope.workspaceRoot });
+        }
+        this.#serenaActivated.add(key);
       }
-      this.#serenaActivated.add(key);
+      return await connection.callTool(input.toolName, scopedArguments);
+    } finally {
+      entry.inFlight = Math.max(0, entry.inFlight - 1);
+      entry.lastUsedAt = this.#now();
     }
-    return connection.callTool(input.toolName, scopedArguments);
+  }
+
+  async closeIdle(maxIdleMs: number): Promise<number> {
+    if (!Number.isFinite(maxIdleMs) || maxIdleMs < 0) {
+      throw new Error("MCP bridge idle timeout must be a non-negative finite number");
+    }
+    const cutoff = this.#now() - maxIdleMs;
+    const idle: Array<{ key: string; entry: McpBridgeConnectionEntry }> = [];
+    for (const [key, entry] of this.#connections) {
+      if (entry.inFlight > 0 || entry.lastUsedAt > cutoff) continue;
+      this.#connections.delete(key);
+      this.#serenaActivated.delete(key);
+      idle.push({ key, entry });
+    }
+    await Promise.allSettled(idle.map(async ({ entry }) => (await entry.connection).close()));
+    return idle.length;
   }
 
   async close(): Promise<void> {
-    const connections = [...this.#connections.values()];
+    const connections = [...this.#connections.values()].map(({ connection }) => connection);
     this.#connections.clear();
     this.#serenaActivated.clear();
     await Promise.allSettled(connections.map(async (connection) => (await connection).close()));
