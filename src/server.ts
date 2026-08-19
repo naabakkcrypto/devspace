@@ -1897,6 +1897,7 @@ export function createServer(
       mcpBridgeServers: mcpBridge?.catalog.servers.length ?? 0,
       mcpBridgeTools: mcpBridge?.catalog.servers.reduce((count, entry) => count + entry.tools.length, 0) ?? 0,
       mcpBridgeConnections: mcpBridge?.manager.connectionCount ?? 0,
+      mcpSessionCount: transports.size,
       mcpBridgeAggregateSha256: mcpBridge?.catalog.aggregateSha256,
       nativeMcpRoutesExposed: mcpBridge !== undefined,
       inFlightMcpRequests,
@@ -1957,7 +1958,31 @@ export function createServer(
       if (requestMode === "existing") {
         const session = transports.get(sessionId!);
         if (!session) {
-          sendJsonRpcError(res, 404, -32000, "Unknown MCP session");
+          // A watchdog restart (or a server deployment) invalidates the in-memory
+          // session registry while the host may still retry with the old ID. Keep
+          // the request useful by serving it through the same isolated stateless
+          // compatibility transport used when hosts omit the header entirely.
+          // DELETE remains a hard miss: it must never mutate a replacement session.
+          if (req.method === "DELETE") {
+            sendJsonRpcError(res, 404, -32000, "Unknown MCP session");
+            return;
+          }
+          const statelessServer = createMcpServer(
+            config,
+            workspaces,
+            reviewCheckpoints,
+            processSessions,
+            localAgentProviders,
+            incomingArtifactAdapters,
+            mcpBridge,
+          );
+          logEvent(config.logging, "warn", "mcp_stale_session_compat", {
+            requestId,
+            method: req.method,
+            sessionIdPrefix: sessionIdPrefix(sessionId),
+            ...requestLogFields(req, config),
+          });
+          await handleStatelessMcpRequest(statelessServer, req, res);
           return;
         }
         transport = session.transport;

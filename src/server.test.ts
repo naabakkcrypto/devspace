@@ -388,6 +388,7 @@ test("healthz reports the bounded Codex inline-full posture", async (t) => {
     mcpBridgeServers: 0,
     mcpBridgeTools: 0,
     mcpBridgeConnections: 0,
+    mcpSessionCount: 0,
     nativeMcpRoutesExposed: false,
     inFlightMcpRequests: 0,
   });
@@ -428,6 +429,7 @@ test("a sessionless tunnel tools/call succeeds without an initialize round trip"
     headers: {
       "content-type": "application/json",
       accept: "application/json, text/event-stream",
+      "mcp-session-id": "stale-after-restart",
     },
     body: JSON.stringify({
       jsonrpc: "2.0",
