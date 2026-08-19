@@ -1,15 +1,22 @@
 import { realpath } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import {
+  McpBridgeOAuthRegistry,
+  mcpBridgeOAuthCallbackUrl,
+} from "./mcp-bridge-oauth.js";
+import {
   createSdkMcpBridgeConnection,
   generateMcpBridgeCatalog,
   loadMcpBridgeRuntimeProfile,
   writeMcpBridgeCatalog,
+  type McpBridgeConnectorFactory,
   type McpBridgeProfilePaths,
 } from "./mcp-bridge.js";
 
 interface CatalogCommandOptions extends McpBridgeProfilePaths {
   outputPath: string;
+  oauthStateDir?: string;
+  oauthCallbackPort?: number;
 }
 
 function argumentValue(argumentsValue: string[], name: string): string {
@@ -19,19 +26,51 @@ function argumentValue(argumentsValue: string[], name: string): string {
   return value;
 }
 
+function optionalArgumentValue(argumentsValue: string[], name: string): string | undefined {
+  const index = argumentsValue.indexOf(name);
+  if (index < 0) return undefined;
+  const value = argumentsValue[index + 1];
+  if (!value || value.startsWith("--")) throw new Error(`Missing required value for ${name}`);
+  return value;
+}
+
+function optionalPort(argumentsValue: string[], name: string): number | undefined {
+  const raw = optionalArgumentValue(argumentsValue, name);
+  if (raw === undefined) return undefined;
+  const port = Number(raw);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error(`Invalid ${name}: ${raw}`);
+  return port;
+}
+
 export function parseCatalogCommand(argumentsValue: string[]): CatalogCommandOptions {
   return {
     codexConfigPath: argumentValue(argumentsValue, "--codex-config"),
     profileStatePath: argumentValue(argumentsValue, "--profile-state"),
     profileRegistryRoot: argumentValue(argumentsValue, "--profile-registry"),
     outputPath: argumentValue(argumentsValue, "--output"),
+    oauthStateDir: optionalArgumentValue(argumentsValue, "--oauth-state-dir"),
+    oauthCallbackPort: optionalPort(argumentsValue, "--oauth-callback-port"),
   };
 }
 
 export async function runCatalogCommand(options: CatalogCommandOptions): Promise<Record<string, unknown>> {
   const startedAt = performance.now();
   const runtime = loadMcpBridgeRuntimeProfile(options);
-  const catalog = await generateMcpBridgeCatalog(runtime, createSdkMcpBridgeConnection);
+  const oauthRegistry = options.oauthStateDir
+    ? new McpBridgeOAuthRegistry({
+        stateDir: options.oauthStateDir,
+        redirectUrlFor: (serverName) => mcpBridgeOAuthCallbackUrl(serverName, options.oauthCallbackPort),
+      })
+    : undefined;
+  const connector: McpBridgeConnectorFactory = oauthRegistry
+    ? async (serverName, config, scopeKey) => {
+        const provider = config.transport === "streamable-http"
+          ? oauthRegistry.providerFor(serverName, new URL(config.url))
+          : undefined;
+        return await createSdkMcpBridgeConnection(serverName, config, scopeKey, provider);
+      }
+    : createSdkMcpBridgeConnection;
+  const catalog = await generateMcpBridgeCatalog(runtime, connector);
   await writeMcpBridgeCatalog(options.outputPath, catalog);
   return {
     ready: true,

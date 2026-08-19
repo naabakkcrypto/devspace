@@ -5,6 +5,7 @@ import { mkdir, rename, unlink, writeFile } from "node:fs/promises";
 import { dirname, join, win32 as path } from "node:path";
 import { promisify } from "node:util";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { UnauthorizedError, type OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
 import { StdioClientTransport, getDefaultEnvironment } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { parse as parseToml } from "smol-toml";
@@ -476,6 +477,7 @@ export async function createSdkMcpBridgeConnection(
   serverName: string,
   config: McpBridgeRuntimeServerConfig,
   scopeKey = "shared",
+  authProvider?: OAuthClientProvider,
 ): Promise<McpBridgeConnection> {
   config = scopeLifecycleServerConfig(serverName, scopeKey, config);
   const client = new Client({
@@ -491,6 +493,7 @@ export async function createSdkMcpBridgeConnection(
         stderr: "pipe",
       })
     : new StreamableHTTPClientTransport(new URL(config.url), {
+        ...(authProvider ? { authProvider } : {}),
         requestInit: Object.keys(config.headers).length > 0
           ? { headers: config.headers }
           : undefined,
@@ -504,6 +507,9 @@ export async function createSdkMcpBridgeConnection(
     await client.connect(transport, { timeout: config.startupTimeoutMs });
   } catch (error) {
     await transport.close().catch(() => undefined);
+    if (error instanceof UnauthorizedError) {
+      throw new Error(`MCP bridge upstream authorization required for ${serverName}`, { cause: error });
+    }
     const diagnostic = redactMcpDiagnostic(stderr);
     throw new Error(
       diagnostic ? `MCP bridge upstream startup failed: ${diagnostic}` : "MCP bridge upstream startup failed",

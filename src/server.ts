@@ -56,6 +56,7 @@ import {
   loadMcpBridgeRuntimeProfile,
   McpBridgeManager,
 } from "./mcp-bridge.js";
+import { McpBridgeOAuthRegistry, mcpBridgeOAuthCallbackUrl } from "./mcp-bridge-oauth.js";
 import { registerMcpBridgeTools, type McpBridgeToolRuntime } from "./mcp-bridge-tools.js";
 import {
   createMcpSessionResource,
@@ -1757,9 +1758,18 @@ export function createServer(
           profileRegistryRoot: config.mcpBridge.profileRegistryRoot,
         });
         const catalog = loadMcpBridgeCatalog(config.mcpBridge.catalogPath);
+        const oauthRegistry = new McpBridgeOAuthRegistry({
+          stateDir: config.stateDir,
+          redirectUrlFor: (serverName) => mcpBridgeOAuthCallbackUrl(serverName),
+        });
         return {
           catalog,
-          manager: new McpBridgeManager(runtime, catalog, createSdkMcpBridgeConnection),
+          manager: new McpBridgeManager(runtime, catalog, async (serverName, serverConfig, scopeKey) => {
+            const provider = serverConfig.transport === "streamable-http"
+              ? oauthRegistry.providerFor(serverName, new URL(serverConfig.url))
+              : undefined;
+            return await createSdkMcpBridgeConnection(serverName, serverConfig, scopeKey, provider);
+          }),
           tenantResolverPath: config.mcpBridge.tenantResolverPath,
         } satisfies McpBridgeToolRuntime;
       })()
